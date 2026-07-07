@@ -1,7 +1,8 @@
 use fundsp::hacker::*;
+use serde::Serialize;
 
 /// Whether the node goes in the pre-fx or post-fx chain.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum NodeType {
     PreFx,
     PostFx,

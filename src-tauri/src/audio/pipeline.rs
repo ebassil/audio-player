@@ -1,5 +1,6 @@
 use crate::audio::decoder::{decode_file, DecodedAudio};
 use crate::audio::graph::AudioGraph;
+use crate::audio::mixing::{MixConfig, MixEngine};
 use crate::audio::output::{AudioCallback, AudioOutput};
 use crate::audio::player::PlaybackState;
 use crate::audio::volume::VolumeState;
@@ -30,6 +31,10 @@ pub struct AudioPipeline {
     running: Arc<AtomicBool>,
     /// Background playback thread handle.
     thread_handle: Option<thread::JoinHandle<()>>,
+    /// Mixing engine for track transitions.
+    mix_engine: Arc<Mutex<MixEngine>>,
+    /// Mix points for the current track (interior mutability via Mutex).
+    mix_points: Arc<Mutex<(Option<f64>, Option<f64>)>>,
 }
 
 impl AudioPipeline {
@@ -47,6 +52,8 @@ impl AudioPipeline {
             read_position: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
+            mix_engine: Arc::new(Mutex::new(MixEngine::new(MixConfig::default()))),
+            mix_points: Arc::new(Mutex::new((None, None))),
         }
     }
 
@@ -236,6 +243,38 @@ impl AudioPipeline {
             }
             None => 0.0,
         }
+    }
+
+    /// Get a reference to the mixing engine.
+    pub fn mix_engine(&self) -> Arc<Mutex<MixEngine>> {
+        Arc::clone(&self.mix_engine)
+    }
+
+    /// Get the current track's mix-out point.
+    pub fn mix_out_point(&self) -> Option<f64> {
+        self.mix_points.lock().unwrap().0
+    }
+
+    /// Get the current track's mix-in point.
+    pub fn mix_in_point(&self) -> Option<f64> {
+        self.mix_points.lock().unwrap().1
+    }
+
+    /// Set mix points for the current track.
+    pub fn set_mix_points(&self, mix_out: Option<f64>, mix_in: Option<f64>) {
+        if let Some(v) = mix_out {
+            if v < 0.0 {
+                return;
+            }
+        }
+        if let Some(v) = mix_in {
+            if v < 0.0 {
+                return;
+            }
+        }
+        let mut points = self.mix_points.lock().unwrap();
+        points.0 = mix_out;
+        points.1 = mix_in;
     }
 }
 

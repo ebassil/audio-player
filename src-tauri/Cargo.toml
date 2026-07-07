@@ -22,4 +22,4 @@ thiserror = "2"
 symphonia = { version = "0.5", features = ["all"] }
 fundsp = "0.18"
 cpal = "0.15"
-wasmtime = "23"
+wasmtime = { version = "23", features = ["component-model"] }

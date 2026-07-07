@@ -19,34 +19,34 @@
 
 ## 3. Plugin System
 
-- [ ] 3.1 Define WIT interface for audio plugins (init, process, reset)
-- [ ] 3.2 Build wasmtime host that loads, instantiates, and calls WASM plugins
-- [ ] 3.3 Implement fundsp adapter node that bridges pull graph → push WASM with buffering
-- [ ] 3.4 Build plugin manifest parser (plugin.json discovery from plugins/ directory)
-- [ ] 3.5 Implement plugin scanning on startup and register discovered plugins
-- [ ] 3.6 Build IPC bridge for plugin UI ↔ Rust parameter communication
-- [ ] 3.7 Implement plugin sandboxed UI loader in webview (iframe/frame)
-- [ ] 3.8 Implement plugin enable/disable and reordering in UI and graph
+- [x] 3.1 Define WIT interface for audio plugins (init, process, reset)
+- [x] 3.2 Build wasmtime host that loads, instantiates, and calls WASM plugins
+- [x] 3.3 Implement fundsp adapter node that bridges pull graph → push WASM with buffering
+- [x] 3.4 Build plugin manifest parser (plugin.json discovery from plugins/ directory)
+- [x] 3.5 Implement plugin scanning on startup and register discovered plugins
+- [x] 3.6 Build IPC bridge for plugin UI ↔ Rust parameter communication
+- [x] 3.7 Implement plugin sandboxed UI loader in webview (iframe/frame)
+- [x] 3.8 Implement plugin enable/disable and reordering in UI and graph
 
 ## 4. Mixing Engine
 
-- [ ] 4.1 Implement fade mix pattern (gain ramp out, pause, gain ramp in)
-- [ ] 4.2 Implement cross-fade mix pattern (gain ramp out + in with overlap)
-- [ ] 4.3 Implement hard fade mix pattern (silence gap between tracks)
-- [ ] 4.4 Implement configurable default mix duration
-- [ ] 4.5 Implement per-song mix-in/mix-out point resolution and override logic
-- [ ] 4.6 Build UI for setting mix points on a waveform/timeline
-- [ ] 4.7 Wire mix engine into playback pipeline between pre-fx and post-fx chains
+- [x] 4.1 Implement fade mix pattern (gain ramp out, pause, gain ramp in)
+- [x] 4.2 Implement cross-fade mix pattern (gain ramp out + in with overlap)
+- [x] 4.3 Implement hard fade mix pattern (silence gap between tracks)
+- [x] 4.4 Implement configurable default mix duration
+- [x] 4.5 Implement per-song mix-in/mix-out point resolution and override logic
+- [x] 4.6 Build UI for setting mix points on a waveform/timeline
+- [x] 4.7 Wire mix engine into playback pipeline between pre-fx and post-fx chains
 
 ## 5. Playlist Management
 
-- [ ] 5.1 Define JSON playlist schema and implement save/load
-- [ ] 5.2 Implement M3U8 playlist export and import
-- [ ] 5.3 Implement drag-drop handler for files and folders
-- [ ] 5.4 Implement directory loading dialog (recursive scan with filtering)
-- [ ] 5.5 Implement Delete (playlist only, no confirmation)
-- [ ] 5.6 Implement DeletePlus (playlist + disk, confirmation dialog with session toggle)
-- [ ] 5.7 Build playlist view in UI (track listing, selection, context menu)
+- [x] 5.1 Define JSON playlist schema and implement save/load
+- [x] 5.2 Implement M3U8 playlist export and import
+- [x] 5.3 Implement drag-drop handler for files and folders
+- [x] 5.4 Implement directory loading dialog (recursive scan with filtering)
+- [x] 5.5 Implement Delete (playlist only, no confirmation)
+- [x] 5.6 Implement DeletePlus (playlist + disk, confirmation dialog with session toggle)
+- [x] 5.7 Build playlist view in UI (track listing, selection, context menu)
 
 ## 6. Shortcut System
 

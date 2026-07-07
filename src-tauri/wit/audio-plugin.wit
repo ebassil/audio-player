@@ -1,0 +1,21 @@
+package audio-player:plugins;
+
+/// An audio DSP plugin that processes PCM audio.
+interface audio-plugin {
+    /// Initialize the plugin with the audio stream parameters.
+    /// Called once when the plugin is loaded into the audio graph.
+    init: func(sample-rate: u32, channels: u32) -> result;
+
+    /// Process a block of audio samples.
+    /// `input` and `output` are interleaved f32 PCM buffers of equal length.
+    /// The plugin should write processed samples into `output`.
+    process: func(input: list<float32>, output: list<float32>) -> result;
+
+    /// Reset the plugin's internal state (e.g., on seek or playback restart).
+    reset: func() -> result;
+}
+
+/// A plugin that implements the audio-plugin interface.
+world audio-plugin-world {
+    import audio-plugin;
+}
