@@ -1,0 +1,26 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+/node_modules
+/dist
+/build
+
+# Tauri v2 generated files
+/src-tauri/gen
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local

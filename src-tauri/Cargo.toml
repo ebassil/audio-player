@@ -1,0 +1,25 @@
+[package]
+name = "audio-player"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "audio_player_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+symphonia = { version = "0.5", features = ["all"] }
+fundsp = "0.18"
+cpal = "0.15"
+wasmtime = "23"
