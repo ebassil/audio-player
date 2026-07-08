@@ -23,7 +23,7 @@ pub struct AppState {
 #[tauri::command]
 fn load_track(state: State<AppState>, path: String) -> Result<String, String> {
     let path_buf = PathBuf::from(&path);
-    let decoded = state
+    let metadata = state
         .pipeline
         .lock()
         .map_err(|e| e.to_string())?
@@ -32,9 +32,9 @@ fn load_track(state: State<AppState>, path: String) -> Result<String, String> {
     Ok(format!(
         "Loaded: {} ({} channels, {} Hz, {:.1}s)",
         path_buf.file_name().unwrap_or_default().to_string_lossy(),
-        decoded.channels,
-        decoded.sample_rate,
-        decoded.duration_secs
+        metadata.channels,
+        metadata.sample_rate,
+        metadata.duration_secs
     ))
 }
 
@@ -555,6 +555,7 @@ pub fn run() {
                                 "muted": pipeline.volume().is_muted(),
                                 "progress": pipeline.progress(),
                                 "position_secs": pipeline.position_secs(),
+                                "duration_secs": pipeline.duration_secs(),
                             });
                             let _ = handle.emit("player-status", status);
                         }

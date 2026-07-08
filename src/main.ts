@@ -34,6 +34,7 @@ interface PlaylistTrack {
 
 let currentTracks: PlaylistTrack[] = [];
 let selectedTrackIndex: number | null = null;
+let currentDurationSecs = 0;
 
 document.addEventListener("DOMContentLoaded", () => {
   const app = document.getElementById("app")!;
@@ -138,8 +139,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const rect = timeline.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
     try {
-      const estimatedDuration = 300;
-      const seekPos = pct * estimatedDuration;
+      const dur = currentDurationSecs || 300;
+      const seekPos = pct * dur;
       await invoke("seek", { positionSecs: seekPos });
     } catch {}
   });
@@ -301,9 +302,13 @@ async function loadDirectory() {
       const entries = await readDir(dirPath);
       for (const entry of entries) {
         const fullPath = `${dirPath}/${entry.name}`;
-        if (!entry.isFile) {
-          const sub = await scanDir(fullPath);
-          results.push(...sub);
+        if (entry.isDirectory) {
+          try {
+            const sub = await scanDir(fullPath);
+            results.push(...sub);
+          } catch {
+            // Skip directories that can't be read
+          }
         } else if (entry.name) {
           const ext = entry.name.substring(entry.name.lastIndexOf(".")).toLowerCase();
           if (audioExtensions.has(ext)) {
@@ -818,8 +823,10 @@ async function initPlayerEvents() {
     muted: boolean;
     progress: number;
     position_secs: number;
+    duration_secs: number;
   }>("player-status", (event) => {
     const status = event.payload;
+    currentDurationSecs = status.duration_secs;
     const statusText = document.getElementById("status-text");
     if (statusText) {
       statusText.textContent = status.state;

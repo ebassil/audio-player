@@ -1,4 +1,4 @@
-use crate::audio::decoder::{decode_file, DecodedAudio};
+use crate::audio::decoder::{DecodeError, StreamingDecoder};
 use crate::audio::graph::AudioGraph;
 use crate::audio::mixing::{MixConfig, MixEngine};
 use crate::audio::output::{AudioCallback, AudioOutput};
@@ -6,9 +6,17 @@ use crate::audio::player::PlaybackState;
 use crate::audio::volume::VolumeState;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+/// Track metadata returned by `load_track`.
+#[derive(Clone, Debug)]
+pub struct TrackMetadata {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub duration_secs: f64,
+}
 
 /// The audio pipeline: decode -> graph -> output.
 ///
@@ -23,10 +31,8 @@ pub struct AudioPipeline {
     volume: VolumeState,
     /// Current playback state.
     playback_state: Arc<Mutex<PlaybackState>>,
-    /// The current decoded audio (None when no track is loaded).
-    current_track: Arc<Mutex<Option<DecodedAudio>>>,
-    /// Current read position in samples (frame index).
-    read_position: Arc<AtomicU32>,
+    /// The current streaming decoder (None when no track is loaded).
+    current_decoder: Arc<Mutex<Option<StreamingDecoder>>>,
     /// Whether the playback thread should keep running.
     running: Arc<AtomicBool>,
     /// Background playback thread handle.
@@ -48,8 +54,7 @@ impl AudioPipeline {
             output: Arc::new(Mutex::new(AudioOutput::new())),
             volume,
             playback_state: Arc::new(Mutex::new(PlaybackState::Stopped)),
-            current_track: Arc::new(Mutex::new(None)),
-            read_position: Arc::new(AtomicU32::new(0)),
+            current_decoder: Arc::new(Mutex::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
             mix_engine: Arc::new(Mutex::new(MixEngine::new(MixConfig::default()))),
@@ -58,22 +63,31 @@ impl AudioPipeline {
     }
 
     /// Load a track from a file path. Does not start playback.
+    /// Returns the track metadata (sample rate, channels, duration).
     pub fn load_track(
         &self,
         path: &Path,
-    ) -> Result<DecodedAudio, crate::audio::decoder::DecodeError> {
-        let decoded = decode_file(path)?;
-        let mut track = self.current_track.lock().unwrap();
-        *track = Some(decoded.clone());
-        self.read_position.store(0, Ordering::SeqCst);
+    ) -> Result<TrackMetadata, DecodeError> {
+        let decoder = StreamingDecoder::new(path)?;
+        let metadata = TrackMetadata {
+            sample_rate: decoder.sample_rate(),
+            channels: decoder.channels(),
+            duration_secs: decoder.duration_secs(),
+        };
+        *self.current_decoder.lock().unwrap() = Some(decoder);
         *self.playback_state.lock().unwrap() = PlaybackState::Stopped;
-        Ok(decoded)
+        Ok(metadata)
     }
 
     /// Start playback of the currently loaded track.
     pub fn play(&mut self) -> Result<(), String> {
-        let track = self.current_track.lock().unwrap().clone();
-        let _track = track.ok_or_else(|| "No track loaded".to_string())?;
+        let has_decoder = {
+            let decoder = self.current_decoder.lock().unwrap();
+            decoder.is_some()
+        };
+        if !has_decoder {
+            return Err("No track loaded".to_string());
+        }
 
         // Update playback state
         *self.playback_state.lock().unwrap() = PlaybackState::Playing;
@@ -87,49 +101,33 @@ impl AudioPipeline {
         }
 
         // Prepare the audio callback
-        let current_track = Arc::clone(&self.current_track);
-        let read_position = Arc::clone(&self.read_position);
+        let current_decoder = Arc::clone(&self.current_decoder);
         let playback_state = Arc::clone(&self.playback_state);
         let running = Arc::clone(&self.running);
 
         let callback: AudioCallback = Arc::new(Mutex::new(move |num_frames: u32| -> Vec<f32> {
-            let track_guard = current_track.lock().unwrap();
-            let track = match track_guard.as_ref() {
-                Some(t) => t,
-                None => return vec![0.0; num_frames as usize * 2],
-            };
-
             if !running.load(Ordering::SeqCst) {
                 return vec![0.0; num_frames as usize * 2];
             }
 
             let state = *playback_state.lock().unwrap();
+            let mut decoder_guard = current_decoder.lock().unwrap();
+            let decoder = match decoder_guard.as_mut() {
+                Some(d) => d,
+                None => return vec![0.0; num_frames as usize * 2],
+            };
+            let channels = decoder.channels();
+            let silence = vec![0.0; num_frames as usize * channels];
+
             match state {
                 PlaybackState::Playing => {
-                    let pos = read_position.load(Ordering::SeqCst) as usize;
-                    let total_samples = track.samples.len();
-                    let channels = track.channels;
-                    let samples_needed = num_frames as usize * channels;
-
-                    if pos >= total_samples {
-                        // End of track
+                    let samples = decoder.read(num_frames as usize);
+                    if decoder.is_eof() {
                         *playback_state.lock().unwrap() = PlaybackState::Stopped;
-                        return vec![0.0; samples_needed];
                     }
-
-                    let end = (pos + samples_needed).min(total_samples);
-                    let mut buffer = track.samples[pos..end].to_vec();
-                    buffer.resize(samples_needed, 0.0);
-
-                    read_position.store(end as u32, Ordering::SeqCst);
-                    buffer
+                    samples
                 }
-                PlaybackState::Paused | PlaybackState::Stopped => {
-                    vec![0.0; num_frames as usize * track.channels]
-                }
-                PlaybackState::Seeking => {
-                    vec![0.0; num_frames as usize * track.channels]
-                }
+                PlaybackState::Paused | PlaybackState::Stopped | PlaybackState::Seeking => silence,
             }
         }));
 
@@ -186,19 +184,18 @@ impl AudioPipeline {
     /// Stop playback and reset position.
     pub fn stop(&mut self) {
         *self.playback_state.lock().unwrap() = PlaybackState::Stopped;
-        self.read_position.store(0, Ordering::SeqCst);
+        if let Some(ref mut d) = *self.current_decoder.lock().unwrap() {
+            d.seek(0.0);
+        }
         let mut output = self.output.lock().unwrap();
         output.stop();
     }
 
     /// Seek to a position in seconds.
     pub fn seek(&mut self, position_secs: f64) {
-        let track = self.current_track.lock().unwrap().clone();
-        if let Some(track) = track {
-            let sample_pos = (position_secs * track.sample_rate as f64) as u32;
-            let max_pos = (track.samples.len() / track.channels) as u32;
-            self.read_position
-                .store(sample_pos.min(max_pos.saturating_sub(1)), Ordering::SeqCst);
+        let mut decoder = self.current_decoder.lock().unwrap();
+        if let Some(ref mut d) = *decoder {
+            d.seek(position_secs);
         }
     }
 
@@ -219,28 +216,27 @@ impl AudioPipeline {
 
     /// Get current playback progress (0.0 to 1.0).
     pub fn progress(&self) -> f64 {
-        let track = self.current_track.lock().unwrap();
-        match track.as_ref() {
-            Some(t) => {
-                let total_frames = t.samples.len() / t.channels;
-                if total_frames == 0 {
-                    return 0.0;
-                }
-                let pos = self.read_position.load(Ordering::SeqCst) as usize / t.channels;
-                (pos as f64 / total_frames as f64).clamp(0.0, 1.0)
-            }
+        let decoder = self.current_decoder.lock().unwrap();
+        match decoder.as_ref() {
+            Some(d) => d.progress(),
             None => 0.0,
         }
     }
 
     /// Get the current position in seconds.
     pub fn position_secs(&self) -> f64 {
-        let track = self.current_track.lock().unwrap();
-        match track.as_ref() {
-            Some(t) => {
-                let pos = self.read_position.load(Ordering::SeqCst) as usize / t.channels;
-                pos as f64 / t.sample_rate as f64
-            }
+        let decoder = self.current_decoder.lock().unwrap();
+        match decoder.as_ref() {
+            Some(d) => d.position_secs(),
+            None => 0.0,
+        }
+    }
+
+    /// Get the duration of the current track in seconds.
+    pub fn duration_secs(&self) -> f64 {
+        let decoder = self.current_decoder.lock().unwrap();
+        match decoder.as_ref() {
+            Some(d) => d.duration_secs(),
             None => 0.0,
         }
     }

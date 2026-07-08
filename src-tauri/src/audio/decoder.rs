@@ -1,25 +1,13 @@
 use std::fs::File;
 use std::path::Path;
 
-use symphonia::core::audio::{Channels, Signal};
-use symphonia::core::codecs::CODEC_TYPE_NULL;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Channels, Signal};
+use symphonia::core::codecs::{Decoder, CODEC_TYPE_NULL};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-
-/// Decoded audio data in f32 PCM format.
-#[derive(Clone, Debug)]
-pub struct DecodedAudio {
-    /// Interleaved PCM f32 samples (L, R, L, R, ... for stereo).
-    pub samples: Vec<f32>,
-    /// Sample rate in Hz (e.g. 44100).
-    pub sample_rate: u32,
-    /// Number of channels (1 = mono, 2 = stereo).
-    pub channels: usize,
-    /// Duration in seconds.
-    pub duration_secs: f64,
-}
+use symphonia::core::units::Time;
 
 /// Errors that can occur during decoding.
 #[derive(Debug, thiserror::Error)]
@@ -40,116 +28,259 @@ pub enum DecodeError {
     DecodeFailed(String),
 }
 
-/// Decode an audio file at `path` into PCM f32 samples.
+/// Streaming decoder that decodes audio incrementally on-demand.
 ///
-/// Supports MP3, WAV, FLAC, OGG, and AAC via symphonia's "all" feature set.
-pub fn decode_file(path: &Path) -> Result<DecodedAudio, DecodeError> {
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
+/// Reads a compressed audio file via symphonia and maintains an internal
+/// buffer of decoded f32 PCM samples. The buffer is refilled automatically
+/// as samples are consumed by `read()`.
+pub struct StreamingDecoder {
+    /// The symphonia format reader (provides demuxed packets).
+    format: Box<dyn FormatReader>,
+    /// The symphonia audio decoder for the selected track.
+    decoder: Box<dyn Decoder>,
+    /// The selected track's ID.
+    track_id: u32,
+    /// Sample rate in Hz.
+    sample_rate: u32,
+    /// Number of audio channels.
+    channels: usize,
+    /// Total duration in seconds.
+    duration_secs: f64,
+    /// Internal buffer of decoded interleaved f32 samples.
+    buffer: Vec<f32>,
+    /// Number of frames (per-channel) that have been read out so far.
+    total_frames_read: u64,
+    /// Target number of frames to prefill the buffer to.
+    prefill_frames: usize,
+    /// Minimum remaining frames before triggering a refill.
+    refill_threshold: usize,
+    /// Whether the end of the audio stream has been reached.
+    eof_reached: bool,
+}
 
-    // Validate supported formats early
-    if !matches!(
-        extension.as_str(),
-        "mp3" | "wav" | "flac" | "ogg" | "aac" | "m4a" | "opus"
-    ) {
-        return Err(DecodeError::UnsupportedFormat(extension));
+impl StreamingDecoder {
+    /// Open an audio file and prepare for streaming decode without decoding any packets.
+    pub fn new(path: &Path) -> Result<Self, DecodeError> {
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        if !matches!(
+            extension.as_str(),
+            "mp3" | "wav" | "flac" | "ogg" | "aac" | "m4a" | "opus"
+        ) {
+            return Err(DecodeError::UnsupportedFormat(extension));
+        }
+
+        let file = File::open(path)?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+        let mut hint = Hint::new();
+        hint.with_extension(&extension);
+
+        let format_opts = FormatOptions::default();
+        let meta_opts = MetadataOptions::default();
+
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &format_opts, &meta_opts)
+            .map_err(|e| DecodeError::Symphonia(e.into()))?;
+
+        let format = probed.format;
+
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .ok_or(DecodeError::NoAudioTrack)?
+            .clone();
+
+        let track_id = track.id;
+        let codec_params = &track.codec_params;
+        let sample_rate = codec_params.sample_rate.unwrap_or(44100);
+        let channels = codec_params
+            .channels
+            .unwrap_or(Channels::FRONT_LEFT | Channels::FRONT_RIGHT)
+            .count();
+
+        let duration_secs = codec_params
+            .n_frames
+            .map(|n| n as f64 / sample_rate as f64)
+            .unwrap_or(0.0);
+
+        let codec_registry = symphonia::default::get_codecs();
+        let decoder = codec_registry
+            .make(codec_params, &Default::default())
+            .map_err(|e| DecodeError::Symphonia(e.into()))?;
+
+        let prefill_frames = 8192;
+        let refill_threshold = 2048;
+
+        Ok(Self {
+            format,
+            decoder,
+            track_id,
+            sample_rate,
+            channels,
+            duration_secs,
+            buffer: Vec::with_capacity(prefill_frames * channels),
+            total_frames_read: 0,
+            prefill_frames,
+            refill_threshold,
+            eof_reached: false,
+        })
     }
 
-    let file = File::open(path)?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    /// Read up to `num_frames` of interleaved f32 samples. Returns exactly
+    /// `num_frames * channels` samples, padding with silence at EOF.
+    pub fn read(&mut self, num_frames: usize) -> Vec<f32> {
+        if self.eof_reached {
+            return vec![0.0; num_frames * self.channels];
+        }
 
-    let mut hint = Hint::new();
-    hint.with_extension(&extension);
+        let samples_needed = num_frames * self.channels;
 
-    let format_opts = FormatOptions::default();
-    let meta_opts = MetadataOptions::default();
+        // Refill buffer if running low
+        if self.buffer.len() < samples_needed {
+            self.fill_buffer();
+        }
 
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &meta_opts)
-        .map_err(|e| DecodeError::Symphonia(e.into()))?;
+        let available = self.buffer.len();
+        let to_read = samples_needed.min(available);
 
-    let mut format = probed.format;
+        let mut result = Vec::with_capacity(samples_needed);
+        result.extend_from_slice(&self.buffer[..to_read]);
 
-    // Select the first audio track
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or(DecodeError::NoAudioTrack)?;
+        // Remove consumed samples from buffer
+        self.buffer.drain(..to_read);
 
-    let codec_params = &track.codec_params;
-    let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-    let channels = codec_params
-        .channels
-        .unwrap_or(Channels::FRONT_LEFT | Channels::FRONT_RIGHT)
-        .count();
+        self.total_frames_read += (to_read / self.channels) as u64;
 
-    let codec_registry = symphonia::default::get_codecs();
-    let mut decoder = codec_registry
-        .make(codec_params, &Default::default())
-        .map_err(|e| DecodeError::Symphonia(e.into()))?;
+        // Pad with silence if at EOF
+        result.resize(samples_needed, 0.0);
+        result
+    }
 
-    let mut all_samples: Vec<f32> = Vec::new();
+    /// Sample rate in Hz.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
 
-    loop {
-        let packet = match format.next_packet() {
-            Ok(pkt) => pkt,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
+    /// Number of audio channels.
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// Total track duration in seconds.
+    pub fn duration_secs(&self) -> f64 {
+        self.duration_secs
+    }
+
+    /// Current playback position in seconds.
+    pub fn position_secs(&self) -> f64 {
+        self.total_frames_read as f64 / self.sample_rate as f64
+    }
+
+    /// Playback progress as a fraction 0.0–1.0.
+    pub fn progress(&self) -> f64 {
+        if self.duration_secs <= 0.0 {
+            return 0.0;
+        }
+        (self.position_secs() / self.duration_secs).clamp(0.0, 1.0)
+    }
+
+    /// Whether the end of the audio stream has been reached.
+    pub fn is_eof(&self) -> bool {
+        self.eof_reached
+    }
+
+    /// Seek to a time position in seconds. After seeking, the next `read()` call
+    /// returns samples from the new position.
+    pub fn seek(&mut self, position_secs: f64) {
+        let seek_to = SeekTo::Time {
+            time: Time::from(position_secs),
+            track_id: None,
+        };
+        let _ = self.format.seek(SeekMode::Accurate, seek_to);
+
+        // Re-create the decoder after seeking (decoder state is invalidated)
+        if let Some(params) = self
+            .format
+            .tracks()
+            .iter()
+            .find(|t| t.id == self.track_id)
+            .map(|t| &t.codec_params)
+        {
+            let codec_registry = symphonia::default::get_codecs();
+            if let Ok(new_decoder) = codec_registry.make(params, &Default::default()) {
+                self.decoder = new_decoder;
             }
-            Err(symphonia::core::errors::Error::IoError(_)) => break,
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        };
+        }
 
-        let decoded = match decoder.decode(&packet) {
-            Ok(d) => d,
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        };
+        self.buffer.clear();
+        self.total_frames_read = (position_secs * self.sample_rate as f64) as u64;
+        self.eof_reached = false;
+    }
 
-        // Convert to interleaved f32 samples
-        let spec = *decoded.spec();
-        let num_frames = decoded.frames();
-        let num_channels = spec.channels.count();
+    /// Decode packets into the internal buffer until it reaches `prefill_frames` or EOF.
+    fn fill_buffer(&mut self) {
+        let target_samples = self.prefill_frames * self.channels;
+        while self.buffer.len() < target_samples {
+            if self.eof_reached {
+                return;
+            }
 
-        match decoded {
-            symphonia::core::audio::AudioBufferRef::F32(buf) => {
-                for frame in 0..num_frames {
-                    for ch in 0..num_channels {
-                        all_samples.push(buf.chan(ch)[frame]);
+            let packet = match self.format.next_packet() {
+                Ok(pkt) => pkt,
+                Err(symphonia::core::errors::Error::IoError(ref e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    self.eof_reached = true;
+                    return;
+                }
+                Err(symphonia::core::errors::Error::IoError(_)) => {
+                    self.eof_reached = true;
+                    return;
+                }
+                Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+                Err(_) => {
+                    self.eof_reached = true;
+                    return;
+                }
+            };
+
+            let decoded = match self.decoder.decode(&packet) {
+                Ok(d) => d,
+                Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+                Err(_) => {
+                    self.eof_reached = true;
+                    return;
+                }
+            };
+
+            let spec = *decoded.spec();
+            let num_frames = decoded.frames();
+            let num_channels = spec.channels.count();
+
+            match decoded {
+                AudioBufferRef::F32(buf) => {
+                    for frame in 0..num_frames {
+                        for ch in 0..num_channels {
+                            self.buffer.push(buf.chan(ch)[frame]);
+                        }
                     }
                 }
-            }
-            other => {
-                let mut scratch =
-                    symphonia::core::audio::AudioBuffer::<f32>::new(num_frames as u64, spec);
-                other.convert(&mut scratch);
-                for frame in 0..num_frames {
-                    for ch in 0..num_channels {
-                        all_samples.push(scratch.chan(ch)[frame]);
+                other => {
+                    let mut scratch = AudioBuffer::<f32>::new(num_frames as u64, spec);
+                    other.convert(&mut scratch);
+                    for frame in 0..num_frames {
+                        for ch in 0..num_channels {
+                            self.buffer.push(scratch.chan(ch)[frame]);
+                        }
                     }
                 }
             }
         }
     }
-
-    let total_frames = all_samples.len() / channels;
-    let duration_secs = if sample_rate > 0 {
-        total_frames as f64 / sample_rate as f64
-    } else {
-        0.0
-    };
-
-    Ok(DecodedAudio {
-        samples: all_samples,
-        sample_rate,
-        channels,
-        duration_secs,
-    })
 }
