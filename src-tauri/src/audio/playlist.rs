@@ -103,3 +103,84 @@ impl Playlist {
         Ok(Playlist { name, tracks })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_playlist() -> Playlist {
+        Playlist {
+            name: "Test".to_string(),
+            tracks: vec![
+                PlaylistTrack {
+                    file_path: "/music/track1.mp3".to_string(),
+                    mix_points: Some(MixPointOverride {
+                        mix_out: Some(120.0),
+                        mix_in: None,
+                    }),
+                    mix_pattern_override: None,
+                    metadata: Some(TrackMetadata {
+                        title: Some("Track 1".to_string()),
+                        artist: Some("Artist".to_string()),
+                        album: Some("Album".to_string()),
+                        duration_secs: Some(240.0),
+                    }),
+                },
+                PlaylistTrack {
+                    file_path: "/music/track2.flac".to_string(),
+                    mix_points: None,
+                    mix_pattern_override: Some("crossfade".to_string()),
+                    metadata: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_playlist_json_roundtrip() {
+        let playlist = create_test_playlist();
+        let path = std::env::temp_dir().join("test_playlist.json");
+        playlist.save_json(&path).unwrap();
+        let loaded = Playlist::load_json(&path).unwrap();
+        assert_eq!(loaded.name, "Test");
+        assert_eq!(loaded.tracks.len(), 2);
+        assert_eq!(loaded.tracks[0].file_path, "/music/track1.mp3");
+        assert_eq!(loaded.tracks[0].mix_points.as_ref().unwrap().mix_out, Some(120.0));
+        assert_eq!(
+            loaded.tracks[1].mix_pattern_override,
+            Some("crossfade".to_string())
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_playlist_m3u8_roundtrip() {
+        let playlist = create_test_playlist();
+        let path = std::env::temp_dir().join("test_playlist.m3u8");
+        playlist.export_m3u8(&path).unwrap();
+        let loaded = Playlist::import_m3u8(&path).unwrap();
+        assert_eq!(loaded.tracks.len(), 2);
+        assert_eq!(loaded.tracks[0].file_path, "/music/track1.mp3");
+        // M3U8 doesn't store mix points
+        assert!(loaded.tracks[0].mix_points.is_none());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_playlist_new_is_empty() {
+        let playlist = Playlist::new("Empty".to_string());
+        assert!(playlist.tracks.is_empty());
+        assert_eq!(playlist.name, "Empty");
+    }
+
+    #[test]
+    fn test_m3u8_skips_headers_and_urls() {
+        let path = std::env::temp_dir().join("test_import.m3u8");
+        let content = "#EXTM3U\n#EXTINF:240,Track 1\nhttp://example.com/stream\n/local/file.mp3\n";
+        std::fs::write(&path, content).unwrap();
+        let playlist = Playlist::import_m3u8(&path).unwrap();
+        assert_eq!(playlist.tracks.len(), 1);
+        assert_eq!(playlist.tracks[0].file_path, "/local/file.mp3");
+        std::fs::remove_file(path).ok();
+    }
+}

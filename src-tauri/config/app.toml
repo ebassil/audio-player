@@ -1,0 +1,5 @@
+mix_pattern = "crossfade"
+mix_duration_secs = 3.0
+volume = 1.0
+muted = false
+plugin_state = []

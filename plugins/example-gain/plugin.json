@@ -1,0 +1,17 @@
+{
+  "name": "Example Gain",
+  "author": "Audio Player",
+  "version": "0.1.0",
+  "wasm": "plugin.wasm",
+  "type": "pre-fx",
+  "parameters": [
+    {
+      "name": "gain",
+      "type": "f32",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 2.0
+    }
+  ],
+  "gui": "ui"
+}

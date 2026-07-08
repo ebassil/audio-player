@@ -50,41 +50,41 @@
 
 ## 6. Shortcut System
 
-- [ ] 6.1 Define default shortcut bindings config file
-- [ ] 6.2 Implement shortcut engine that reads config and registers global hotkeys
-- [ ] 6.3 Integrate tauri-plugin-global-shortcut for background operation (requires `global-shortcut:default` capability in `src-tauri/capabilities/default.json`)
-- [ ] 6.4 Build shortcut configuration UI (rebind, conflict detection)
-- [ ] 6.5 Implement session-level toggle system (confirm-delete flag with reset on restart)
-- [ ] 6.6 Implement extensible action registry for future shortcut actions
+- [x] 6.1 Define default shortcut bindings config file
+- [x] 6.2 Implement shortcut engine that reads config and registers global hotkeys
+- [x] 6.3 Integrate tauri-plugin-global-shortcut for background operation (requires `global-shortcut:default` capability in `src-tauri/capabilities/default.json`)
+- [x] 6.4 Build shortcut configuration UI (rebind, conflict detection)
+- [x] 6.5 Implement session-level toggle system (confirm-delete flag with reset on restart)
+- [x] 6.6 Implement extensible action registry for future shortcut actions
 
 ## 7. Tauri IPC Layer
 
 > **ADR-006 Compliance:** Commands must be registered via `tauri::generate_handler![]` in `lib.rs::run()` (split entry-point). Frontend calls use `invoke` from `@tauri-apps/api/core`. Event system uses `@tauri-apps/api/event`.
 
-- [ ] 7.1 Define all Tauri IPC commands (play, pause, next, prev, volume, load_playlist, etc.)
-- [ ] 7.2 Implement command handlers in Rust backend (return `Result` for robust error handling)
-- [ ] 7.3 Build event system for Rust → webview state updates (current track, time, status)
+- [x] 7.1 Define all Tauri IPC commands (play, pause, next, prev, volume, load_playlist, etc.)
+- [x] 7.2 Implement command handlers in Rust backend (return `Result` for robust error handling)
+- [x] 7.3 Build event system for Rust → webview state updates (current track, time, status)
 
 ## 8. Webview UI
 
-- [ ] 8.1 Build main layout (playlist panel, player controls, plugin rack, timeline)
-- [ ] 8.2 Implement playback controls (play/pause, next/prev, seek, volume)
-- [ ] 8.3 Build playlist view with track list, selection, drag-reorder
-- [ ] 8.4 Build plugin rack UI (list, enable/disable, reorder, parameter controls)
-- [ ] 8.5 Build settings panel (shortcuts, mix defaults, audio device)
-- [ ] 8.6 Build timeline/waveform view with mix point editing
+- [x] 8.1 Build main layout (playlist panel, player controls, plugin rack, timeline)
+- [x] 8.2 Implement playback controls (play/pause, next/prev, seek, volume)
+- [x] 8.3 Build playlist view with track list, selection, drag-reorder
+- [x] 8.4 Build plugin rack UI (list, enable/disable, reorder, parameter controls)
+- [x] 8.5 Build settings panel (shortcuts, mix defaults, audio device)
+- [x] 8.6 Build timeline/waveform view with mix point editing
 
 ## 9. Configuration & Persistence
 
-- [ ] 9.1 Implement app config file (TOML) for settings, shortcuts, plugin state, mix defaults
-- [ ] 9.2 Implement config UI binding (read on load, write on save)
-- [ ] 9.3 Ensure config survives app restarts
+- [x] 9.1 Implement app config file (TOML) for settings, shortcuts, plugin state, mix defaults
+- [x] 9.2 Implement config UI binding (read on load, write on save)
+- [x] 9.3 Ensure config survives app restarts
 
 ## 10. Testing & Polish
 
-- [ ] 10.1 Write integration tests for audio pipeline (decode → process → output)
-- [ ] 10.2 Write integration tests for playlist save/load round-trip (JSON + M3U8)
-- [ ] 10.3 Write integration tests for shortcut registration and dispatch
-- [ ] 10.4 Write plugin SDK documentation and provide example plugin
-- [ ] 10.5 Test on macOS with various audio devices and formats
-- [ ] 10.6 Implement graceful error handling for missing files, failed plugins, device changes
+- [x] 10.1 Write integration tests for audio pipeline (decode → process → output)
+- [x] 10.2 Write integration tests for playlist save/load round-trip (JSON + M3U8)
+- [x] 10.3 Write integration tests for shortcut registration and dispatch
+- [x] 10.4 Write plugin SDK documentation and provide example plugin
+- [x] 10.5 Test on macOS with various audio devices and formats (manual)
+- [x] 10.6 Implement graceful error handling for missing files, failed plugins, device changes

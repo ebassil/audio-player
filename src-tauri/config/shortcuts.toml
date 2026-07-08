@@ -1,0 +1,39 @@
+[[shortcuts]]
+action = "PlayPause"
+key_combo = "Ctrl+Alt+Shift+P"
+
+[[shortcuts]]
+action = "NextTrack"
+key_combo = "Ctrl+Alt+Shift+N"
+
+[[shortcuts]]
+action = "PreviousTrack"
+key_combo = "Ctrl+Alt+Shift+B"
+
+[[shortcuts]]
+action = "Delete"
+key_combo = "Ctrl+Alt+Shift+D"
+
+[[shortcuts]]
+action = "DeletePlus"
+key_combo = "Ctrl+Alt+Shift+X"
+
+[[shortcuts]]
+action = "VolumeUp"
+key_combo = "Ctrl+Alt+Shift+Up"
+
+[[shortcuts]]
+action = "VolumeDown"
+key_combo = "Ctrl+Alt+Shift+Down"
+
+[[shortcuts]]
+action = "Mute"
+key_combo = "Ctrl+Alt+Shift+M"
+
+[[shortcuts]]
+action = "SeekForward"
+key_combo = "Ctrl+Alt+Shift+Right"
+
+[[shortcuts]]
+action = "SeekBackward"
+key_combo = "Ctrl+Alt+Shift+Left"

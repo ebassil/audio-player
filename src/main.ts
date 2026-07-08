@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
 
 interface PluginInfo {
   name: string;
@@ -56,15 +58,17 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </aside>
       <main class="content">
-        <div id="player-controls" class="player-controls">
-          <button id="btn-play">▶</button>
-          <button id="btn-pause">⏸</button>
-          <button id="btn-stop">⏹</button>
-          <input type="range" id="volume-slider" min="0" max="100" value="100" />
-          <span id="volume-label">100%</span>
-          <button id="btn-mute">🔊</button>
-          <span id="status-text">Stopped</span>
-        </div>
+          <div id="player-controls" class="player-controls">
+            <button id="btn-prev">⏮</button>
+            <button id="btn-play">▶</button>
+            <button id="btn-pause">⏸</button>
+            <button id="btn-stop">⏹</button>
+            <button id="btn-next">⏭</button>
+            <input type="range" id="volume-slider" min="0" max="100" value="100" />
+            <span id="volume-label">100%</span>
+            <button id="btn-mute">🔊</button>
+            <span id="status-text">Stopped</span>
+          </div>
         <div class="timeline-container">
           <div id="timeline" class="timeline">
             <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
@@ -101,12 +105,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const gain = parseInt(volumeSlider.value) / 100;
     await invoke("set_volume", { gain });
     volumeLabel.textContent = `${Math.round(gain * 100)}%`;
+    await saveAppConfig();
   });
 
   muteBtn.addEventListener("click", async () => {
     const muted = muteBtn.textContent === "🔊";
     await invoke("set_mute", { muted });
     muteBtn.textContent = muted ? "🔇" : "🔊";
+    await saveAppConfig();
   });
 
   // Playback controls
@@ -119,6 +125,24 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-stop")?.addEventListener("click", () => {
     invoke("stop");
   });
+  document.getElementById("btn-next")?.addEventListener("click", () => {
+    playNextTrack();
+  });
+  document.getElementById("btn-prev")?.addEventListener("click", () => {
+    playPrevTrack();
+  });
+
+  // Seek on timeline click
+  const timeline = document.getElementById("timeline");
+  timeline?.addEventListener("click", async (e) => {
+    const rect = timeline.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    try {
+      const estimatedDuration = 300;
+      const seekPos = pct * estimatedDuration;
+      await invoke("seek", { positionSecs: seekPos });
+    } catch {}
+  });
 
   // Mix controls
   const mixPatternSelect = document.getElementById("mix-pattern-select") as HTMLSelectElement;
@@ -130,6 +154,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pattern: mixPatternSelect.value,
       duration_secs: parseFloat(mixDurationSlider.value),
     });
+    await saveAppConfig();
   });
 
   mixDurationSlider.addEventListener("input", async () => {
@@ -139,6 +164,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pattern: mixPatternSelect.value,
       duration_secs: val,
     });
+    await saveAppConfig();
   });
 
   document.getElementById("btn-set-mix-out")?.addEventListener("click", () => {
@@ -155,6 +181,17 @@ document.addEventListener("DOMContentLoaded", () => {
   initPluginRack();
   loadMixConfig();
   initPlaylist();
+  initGlobalShortcuts();
+  initPlayerEvents();
+  loadAppConfig();
+
+  // Add settings button
+  const settingsBtn = document.createElement("button");
+  settingsBtn.id = "btn-settings";
+  settingsBtn.title = "Settings";
+  settingsBtn.textContent = "⚙";
+  settingsBtn.addEventListener("click", openSettingsPanel);
+  document.getElementById("player-controls")?.appendChild(settingsBtn);
 });
 
 let mixOutPercent = 0;
@@ -184,6 +221,7 @@ function initPlaylist() {
   document.getElementById("btn-load-dir")?.addEventListener("click", loadDirectory);
   setupPlaylistDragDrop();
   setupPlaylistKeyboard();
+  setupPlaylistDragReorder();
 }
 
 async function loadPlaylistJson() {
@@ -345,6 +383,8 @@ function renderPlaylist() {
   currentTracks.forEach((track, index) => {
     const li = document.createElement("li");
     li.className = "playlist-item";
+    li.draggable = true;
+    li.dataset.trackIndex = String(index);
     if (index === selectedTrackIndex) li.classList.add("selected");
 
     const fileName = track.file_path.split("/").pop() || track.file_path;
@@ -386,6 +426,20 @@ async function loadTrack(filePath: string) {
   } catch (err) {
     console.error("Failed to load track:", err);
   }
+}
+
+async function playNextTrack() {
+  if (selectedTrackIndex === null || selectedTrackIndex >= currentTracks.length - 1) return;
+  selectedTrackIndex++;
+  renderPlaylist();
+  await loadTrack(currentTracks[selectedTrackIndex].file_path);
+}
+
+async function playPrevTrack() {
+  if (selectedTrackIndex === null || selectedTrackIndex <= 0) return;
+  selectedTrackIndex--;
+  renderPlaylist();
+  await loadTrack(currentTracks[selectedTrackIndex].file_path);
 }
 
 function setupPlaylistDragDrop() {
@@ -459,6 +513,80 @@ function setupPlaylistKeyboard() {
         loadTrack(currentTracks[selectedTrackIndex].file_path);
       }
     }
+  });
+}
+
+function setupPlaylistDragReorder() {
+  const list = document.getElementById("playlist-view");
+  if (!list) return;
+
+  let dragItem: HTMLElement | null = null;
+
+  list.addEventListener("dragstart", (e) => {
+    const target = (e.target as HTMLElement).closest(".playlist-item") as HTMLElement;
+    if (target) {
+      dragItem = target;
+      target.style.opacity = "0.5";
+      e.dataTransfer?.setData("text/plain", target.dataset.trackIndex ?? "");
+    }
+  });
+
+  list.addEventListener("dragend", (e) => {
+    const target = (e.target as HTMLElement).closest(".playlist-item") as HTMLElement;
+    if (target) {
+      target.style.opacity = "1";
+    }
+    dragItem = null;
+    document.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+  });
+
+  list.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    const target = (e.target as HTMLElement).closest(".playlist-item") as HTMLElement;
+    if (target && target !== dragItem) {
+      target.classList.add("drag-over");
+    }
+  });
+
+  list.addEventListener("dragleave", (e) => {
+    const target = (e.target as HTMLElement).closest(".playlist-item") as HTMLElement;
+    target?.classList.remove("drag-over");
+  });
+
+  list.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    const target = (e.target as HTMLElement).closest(".playlist-item") as HTMLElement;
+    if (!dragItem || !target || dragItem === target) return;
+
+    target.classList.remove("drag-over");
+
+    const items = [...list.querySelectorAll(".playlist-item")];
+    const fromPos = items.indexOf(dragItem);
+    const toPos = items.indexOf(target);
+
+    if (fromPos < toPos) {
+      target.insertAdjacentElement("afterend", dragItem);
+    } else {
+      target.insertAdjacentElement("beforebegin", dragItem);
+    }
+
+    // Update data model
+    const [moved] = currentTracks.splice(fromPos, 1);
+    currentTracks.splice(toPos, 0, moved);
+
+    // Update selected index
+    if (selectedTrackIndex === fromPos) {
+      selectedTrackIndex = toPos;
+    } else if (selectedTrackIndex !== null) {
+      if (fromPos < selectedTrackIndex && toPos >= selectedTrackIndex) {
+        selectedTrackIndex--;
+      } else if (fromPos > selectedTrackIndex && toPos <= selectedTrackIndex) {
+        selectedTrackIndex++;
+      }
+    }
+
+    await invoke("set_playlist_tracks", { tracks: currentTracks as unknown as Record<string, unknown>[] });
+    renderPlaylist();
   });
 }
 
@@ -632,4 +760,324 @@ async function loadPluginUi(pluginIndex: number) {
   } catch (err) {
     container.innerHTML = `<p class="error">Failed to load plugin UI: ${err}</p>`;
   }
+}
+
+// --- Global Shortcut Integration (task 6.3) ---
+
+interface ShortcutBinding {
+  action: string;
+  action_label: string;
+  key_combo: string;
+}
+
+async function initGlobalShortcuts() {
+  try {
+    const shortcuts: ShortcutBinding[] = await invoke("get_shortcuts");
+    for (const s of shortcuts) {
+      const registered = await isRegistered(s.key_combo);
+      if (!registered) {
+        await register(s.key_combo, (event) => {
+          if (event.state === "Pressed") {
+            handleShortcutAction(s.action);
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.error("Failed to register global shortcuts:", err);
+  }
+}
+
+async function reinitShortcuts() {
+  try {
+    // Unregister all, re-register from config
+    const shortcuts: ShortcutBinding[] = await invoke("get_shortcuts");
+    for (const s of shortcuts) {
+      try {
+        await unregister(s.key_combo);
+      } catch {}
+      try {
+        await register(s.key_combo, (event) => {
+          if (event.state === "Pressed") {
+            handleShortcutAction(s.action);
+          }
+        });
+      } catch (e) {
+        console.error(`Failed to register ${s.key_combo}:`, e);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to reinit shortcuts:", err);
+  }
+}
+
+async function initPlayerEvents() {
+  await listen<{
+    state: string;
+    volume: number;
+    muted: boolean;
+    progress: number;
+    position_secs: number;
+  }>("player-status", (event) => {
+    const status = event.payload;
+    const statusText = document.getElementById("status-text");
+    if (statusText) {
+      statusText.textContent = status.state;
+    }
+    const progressBar = document.getElementById("progress-bar");
+    if (progressBar) {
+      progressBar.style.width = `${status.progress * 100}%`;
+    }
+  });
+}
+
+async function loadAppConfig() {
+  try {
+    const config: { mix_pattern: string; mix_duration_secs: number; volume: number; muted: boolean } =
+      await invoke("load_app_config");
+    const volumeSlider = document.getElementById("volume-slider") as HTMLInputElement;
+    const muteBtn = document.getElementById("btn-mute");
+    if (volumeSlider) {
+      volumeSlider.value = String(Math.round(config.volume * 100));
+    }
+    if (muteBtn) {
+      muteBtn.textContent = config.muted ? "🔇" : "🔊";
+    }
+    const mixPattern = document.getElementById("mix-pattern-select") as HTMLSelectElement;
+    const mixDuration = document.getElementById("mix-duration-slider") as HTMLInputElement;
+    const mixDurationLabel = document.getElementById("mix-duration-label");
+    if (mixPattern) mixPattern.value = config.mix_pattern;
+    if (mixDuration) mixDuration.value = String(config.mix_duration_secs);
+    if (mixDurationLabel) mixDurationLabel.textContent = `${config.mix_duration_secs.toFixed(1)}s`;
+  } catch (err) {
+    console.error("Failed to load app config:", err);
+  }
+}
+
+async function saveAppConfig() {
+  try {
+    await invoke("save_app_config");
+  } catch (err) {
+    console.error("Failed to save app config:", err);
+  }
+}
+
+function handleShortcutAction(action: string) {
+  switch (action) {
+    case "PlayPause":
+      invoke("play");
+      break;
+    case "NextTrack":
+      break;
+    case "PreviousTrack":
+      break;
+    case "Delete":
+      if (selectedTrackIndex !== null) deleteTrackFromPlaylist(selectedTrackIndex);
+      break;
+    case "DeletePlus":
+      if (selectedTrackIndex !== null) deleteTrackPlus(selectedTrackIndex);
+      break;
+    case "VolumeUp":
+      {
+        const slider = document.getElementById("volume-slider") as HTMLInputElement;
+        if (slider) {
+          const val = Math.min(100, parseInt(slider.value) + 5);
+          slider.value = String(val);
+          slider.dispatchEvent(new Event("input"));
+        }
+      }
+      break;
+    case "VolumeDown":
+      {
+        const slider = document.getElementById("volume-slider") as HTMLInputElement;
+        if (slider) {
+          const val = Math.max(0, parseInt(slider.value) - 5);
+          slider.value = String(val);
+          slider.dispatchEvent(new Event("input"));
+        }
+      }
+      break;
+    case "Mute":
+      {
+        const btn = document.getElementById("btn-mute");
+        if (btn) btn.click();
+      }
+      break;
+    case "SeekForward":
+      break;
+    case "SeekBackward":
+      break;
+  }
+}
+
+// Extensible action registry (task 6.6)
+// Future actions can be added by extending handleShortcutAction()
+
+// --- Settings Panel (tasks 6.4, 8.5) ---
+
+async function openSettingsPanel() {
+  const container = document.getElementById("plugin-ui-container");
+  if (!container) return;
+
+  try {
+    const shortcuts: ShortcutBinding[] = await invoke("get_shortcuts");
+
+    container.innerHTML = `
+      <div class="settings-panel">
+        <h3>Settings</h3>
+
+        <section class="settings-section">
+          <h4>Keyboard Shortcuts</h4>
+          <div class="shortcut-list" id="shortcut-list">
+            ${shortcuts.map((s, i) => `
+              <div class="shortcut-item" data-index="${i}">
+                <span class="shortcut-label">${s.action_label}</span>
+                <span class="shortcut-key" data-action="${s.action}" data-key="${s.key_combo}">
+                  ${s.key_combo}
+                </span>
+                <button class="btn-rebind" data-action="${s.action}">Rebind</button>
+              </div>
+            `).join("")}
+          </div>
+          <div class="settings-actions">
+            <button id="btn-reset-shortcuts">Reset to Defaults</button>
+            <button id="btn-save-shortcuts">Save Shortcuts</button>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4>Mix Defaults</h4>
+          <div class="setting-row">
+            <label>Default Mix Pattern:</label>
+            <select id="settings-mix-pattern">
+              <option value="crossfade">Cross-Fade</option>
+              <option value="fade">Fade</option>
+              <option value="hardfade">Hard Fade</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>Default Mix Duration (s):</label>
+            <input type="range" id="settings-mix-duration" min="1" max="15" step="0.5" value="3" />
+            <span id="settings-mix-duration-label">3.0s</span>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4>Audio Device</h4>
+          <div class="setting-row">
+            <label>Output Device:</label>
+            <select id="settings-audio-device"></select>
+          </div>
+        </section>
+      </div>
+    `;
+
+    // Wire up rebind buttons
+    document.querySelectorAll(".btn-rebind").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = (btn as HTMLElement).dataset.action!;
+        const keySpan = document.querySelector(`.shortcut-key[data-action="${action}"]`) as HTMLElement;
+        if (!keySpan) return;
+
+        keySpan.textContent = "Press a key combination...";
+        (keySpan as HTMLElement).style.color = "#e67e22";
+
+        const handler = async (e: KeyboardEvent) => {
+          const combo = buildKeyCombo(e);
+          if (!combo) return;
+          e.preventDefault();
+          document.removeEventListener("keydown", handler);
+
+          try {
+            await invoke("set_shortcut", { action, keyCombo: combo });
+            keySpan.textContent = combo;
+            (keySpan as HTMLElement).dataset.key = combo;
+            (keySpan as HTMLElement).style.color = "";
+            await reinitShortcuts();
+          } catch (err) {
+            keySpan.textContent = `Error: ${err}`;
+            (keySpan as HTMLElement).style.color = "#d32f2f";
+            setTimeout(() => {
+              keySpan.textContent = (keySpan as HTMLElement).dataset.key || combo;
+              (keySpan as HTMLElement).style.color = "";
+            }, 2000);
+          }
+        };
+
+        document.addEventListener("keydown", handler, { once: true });
+      });
+    });
+
+    document.getElementById("btn-reset-shortcuts")?.addEventListener("click", async () => {
+      await invoke("reset_shortcuts");
+      await openSettingsPanel();
+      await reinitShortcuts();
+    });
+
+    document.getElementById("btn-save-shortcuts")?.addEventListener("click", async () => {
+      await invoke("save_shortcuts");
+    });
+
+    // Mix defaults sync
+    const mixPattern = document.getElementById("settings-mix-pattern") as HTMLSelectElement;
+    const mixDuration = document.getElementById("settings-mix-duration") as HTMLInputElement;
+    const mixDurationLabel = document.getElementById("settings-mix-duration-label")!;
+
+    try {
+      const mixConfig: { pattern: string; duration_secs: number } = await invoke("get_mix_config");
+      mixPattern.value = mixConfig.pattern.toLowerCase();
+      mixDuration.value = String(mixConfig.duration_secs);
+      mixDurationLabel.textContent = `${mixConfig.duration_secs.toFixed(1)}s`;
+    } catch {}
+
+    mixPattern.addEventListener("change", async () => {
+      await invoke("set_mix_config", {
+        pattern: mixPattern.value,
+        duration_secs: parseFloat(mixDuration.value),
+      });
+    });
+
+    mixDuration.addEventListener("input", async () => {
+      const val = parseFloat(mixDuration.value);
+      mixDurationLabel.textContent = `${val.toFixed(1)}s`;
+      await invoke("set_mix_config", {
+        pattern: mixPattern.value,
+        duration_secs: val,
+      });
+    });
+  } catch (err) {
+    container.innerHTML = `<p class="error">Failed to load settings: ${err}</p>`;
+  }
+}
+
+function buildKeyCombo(e: KeyboardEvent): string | null {
+  const parts: string[] = [];
+  if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
+  if (e.altKey) parts.push("Alt");
+  if (e.shiftKey) parts.push("Shift");
+
+  const keyMap: Record<string, string> = {
+    " ": "Space",
+    ArrowUp: "Up",
+    ArrowDown: "Down",
+    ArrowLeft: "Left",
+    ArrowRight: "Right",
+    Escape: "Esc",
+    Enter: "Enter",
+    Tab: "Tab",
+  };
+
+  let key = e.key;
+  if (keyMap[key]) key = keyMap[key];
+  if (key.length === 1) key = key.toUpperCase();
+
+  // Require at least one modifier
+  if (parts.length === 0 && key.length > 1) {
+    // Function keys without modifier
+  } else if (parts.length === 0) {
+    return null;
+  }
+
+  parts.push(key);
+  return parts.join("+");
 }

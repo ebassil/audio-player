@@ -1,11 +1,15 @@
 mod audio;
 
-use audio::pipeline::AudioPipeline;
-use audio::playlist::Playlist;
-use audio::plugin_manager::PluginManager;
+use crate::audio::pipeline::AudioPipeline;
+use crate::audio::playlist::Playlist;
+use crate::audio::plugin_manager::PluginManager;
+use crate::audio::shortcuts::{ShortcutAction, ShortcutConfig, ShortcutEngine};
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
+use tauri::Emitter;
+use tauri::Manager;
 use tauri::State;
 
 /// Application state shared across Tauri commands.
@@ -13,6 +17,7 @@ pub struct AppState {
     pub pipeline: Mutex<AudioPipeline>,
     pub plugin_manager: Mutex<PluginManager>,
     pub playlist: Mutex<Playlist>,
+    pub shortcut_engine: Mutex<ShortcutEngine>,
 }
 
 #[tauri::command]
@@ -376,11 +381,141 @@ fn get_graph_nodes(state: State<AppState>) -> Result<Vec<serde_json::Value>, Str
     Ok(nodes)
 }
 
+// --- Shortcut IPC Commands ---
+
+#[tauri::command]
+fn get_shortcuts(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let engine = state.shortcut_engine.lock().map_err(|e| e.to_string())?;
+    let config = engine.config();
+    let shortcuts: Vec<_> = config
+        .shortcuts
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "action": format!("{:?}", b.action),
+                "action_label": ShortcutAction::all()
+                    .iter()
+                    .find(|(a, _)| a == &b.action)
+                    .map(|(_, label)| label)
+                    .unwrap_or(&""),
+                "key_combo": b.key_combo,
+            })
+        })
+        .collect();
+    Ok(shortcuts)
+}
+
+#[tauri::command]
+fn set_shortcut(
+    state: State<AppState>,
+    action: String,
+    key_combo: String,
+) -> Result<String, String> {
+    let action_enum = ShortcutAction::all()
+        .iter()
+        .find(|(a, label)| format!("{:?}", a) == action || *label == action)
+        .map(|(a, _)| a.clone())
+        .ok_or_else(|| format!("Unknown action: {}", action))?;
+
+    let mut engine = state.shortcut_engine.lock().map_err(|e| e.to_string())?;
+    let conflicts = engine.check_conflicts(&action_enum, &key_combo);
+    if !conflicts.is_empty() {
+        return Err(format!("Conflicts: {}", conflicts.join(", ")));
+    }
+    engine.set_binding(action_enum, key_combo);
+    Ok("Shortcut updated".to_string())
+}
+
+#[tauri::command]
+fn reset_shortcuts(state: State<AppState>) -> Result<String, String> {
+    let mut engine = state.shortcut_engine.lock().map_err(|e| e.to_string())?;
+    *engine.config_mut() = ShortcutConfig::default_shortcuts();
+    Ok("Shortcuts reset to defaults".to_string())
+}
+
+#[tauri::command]
+fn save_shortcuts(state: State<AppState>) -> Result<String, String> {
+    let engine = state.shortcut_engine.lock().map_err(|e| e.to_string())?;
+    let config_dir = PathBuf::from("config");
+    std::fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    let path = config_dir.join("shortcuts.toml");
+    engine.config().save(&path)?;
+    Ok("Shortcuts saved".to_string())
+}
+
+#[tauri::command]
+fn get_session_toggles(_state: State<AppState>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "confirm_delete": true,
+    }))
+}
+
+// --- Config IPC Commands ---
+
+#[tauri::command]
+fn get_config_dir() -> Result<String, String> {
+    let config_dir = PathBuf::from("config");
+    std::fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    Ok(config_dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn save_app_config(state: State<AppState>) -> Result<String, String> {
+    let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
+    let mix = pipeline.mix_engine();
+    let mix_config = mix.lock().map_err(|e| e.to_string())?.config().clone();
+    let volume = pipeline.volume();
+
+    let app_config = audio::config::AppConfig::from_mix_config(&mix_config);
+    let app_config = audio::config::AppConfig {
+        volume: volume.raw_gain(),
+        muted: volume.is_muted(),
+        ..app_config
+    };
+
+    let config_path = PathBuf::from("config/app.toml");
+    app_config.save(&config_path)?;
+    Ok("Config saved".to_string())
+}
+
+#[tauri::command]
+fn load_app_config(state: State<AppState>) -> Result<serde_json::Value, String> {
+    let config_path = PathBuf::from("config/app.toml");
+    let config = audio::config::AppConfig::load(&config_path).unwrap_or_default();
+
+    // Apply config to pipeline
+    let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
+    pipeline.volume().set_gain(config.volume);
+    pipeline.volume().set_mute(config.muted);
+
+    let mix = pipeline.mix_engine();
+    let mut mix = mix.lock().map_err(|e| e.to_string())?;
+    mix.set_config(config.to_mix_config());
+
+    Ok(serde_json::json!({
+        "mix_pattern": config.mix_pattern,
+        "mix_duration_secs": config.mix_duration_secs,
+        "volume": config.volume,
+        "muted": config.muted,
+    }))
+}
+
 pub fn run() {
     let pipeline = AudioPipeline::new();
     let plugins_dir = PathBuf::from("plugins");
     let mut plugin_manager = PluginManager::new(plugins_dir.clone());
     let playlist = Playlist::new("Default".to_string());
+
+    // Load shortcut config
+    let config_dir = PathBuf::from("config");
+    std::fs::create_dir_all(&config_dir).ok();
+    let shortcuts_path = config_dir.join("shortcuts.toml");
+    if !shortcuts_path.exists() {
+        let default_config = ShortcutConfig::default_shortcuts();
+        default_config.save(&shortcuts_path).ok();
+    }
+    let shortcut_config = ShortcutConfig::load(&shortcuts_path).unwrap_or_default();
+    let shortcut_engine = ShortcutEngine::new(shortcut_config);
 
     // Scan and load plugins on startup
     let graph = pipeline.graph();
@@ -403,6 +538,31 @@ pub fn run() {
             pipeline: Mutex::new(pipeline),
             plugin_manager: Mutex::new(plugin_manager),
             playlist: Mutex::new(playlist),
+            shortcut_engine: Mutex::new(shortcut_engine),
+        })
+        .setup(|app| {
+            // Start background event emission for player state updates
+            let handle = app.handle().clone();
+
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_millis(250));
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        if let Ok(pipeline) = state.pipeline.lock() {
+                            let status = serde_json::json!({
+                                "state": format!("{:?}", pipeline.state()),
+                                "volume": pipeline.volume().raw_gain(),
+                                "muted": pipeline.volume().is_muted(),
+                                "progress": pipeline.progress(),
+                                "position_secs": pipeline.position_secs(),
+                            });
+                            let _ = handle.emit("player-status", status);
+                        }
+                    }
+                }
+            });
+
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -433,6 +593,14 @@ pub fn run() {
             import_m3u8,
             export_m3u8,
             remove_tracks_from_playlist,
+            get_shortcuts,
+            set_shortcut,
+            reset_shortcuts,
+            save_shortcuts,
+            get_session_toggles,
+            get_config_dir,
+            save_app_config,
+            load_app_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

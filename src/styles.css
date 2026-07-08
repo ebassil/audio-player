@@ -327,3 +327,115 @@ body.drag-over {
   outline: 3px dashed #4a90d9;
   outline-offset: -3px;
 }
+
+.settings-panel {
+  padding: 16px;
+  font-size: 13px;
+}
+
+.settings-panel h3 {
+  font-size: 16px;
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.settings-section {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #eee;
+}
+
+.settings-section h4 {
+  font-size: 13px;
+  text-transform: uppercase;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.shortcut-label {
+  flex: 1;
+  font-weight: 500;
+  color: #444;
+}
+
+.shortcut-key {
+  font-family: monospace;
+  font-size: 12px;
+  background: #f0f0f0;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid #ddd;
+  min-width: 120px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.btn-rebind {
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.btn-rebind:hover {
+  background: #eee;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.settings-actions button {
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.setting-row label {
+  min-width: 140px;
+  color: #555;
+}
+
+.setting-row input[type="range"] {
+  width: 100px;
+}
+
+.setting-row select {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+#btn-settings {
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+#btn-settings:hover {
+  background: #eee;
+}
