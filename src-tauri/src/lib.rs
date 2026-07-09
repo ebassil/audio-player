@@ -482,9 +482,9 @@ fn reset_shortcuts(state: State<AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn save_shortcuts(state: State<AppState>) -> Result<String, String> {
+fn save_shortcuts(app_handle: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     let engine = state.shortcut_engine.lock().map_err(|e| e.to_string())?;
-    let config_dir = PathBuf::from("config");
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
     let path = config_dir.join("shortcuts.toml");
     engine.config().save(&path)?;
@@ -501,14 +501,14 @@ fn get_session_toggles(_state: State<AppState>) -> Result<serde_json::Value, Str
 // --- Config IPC Commands ---
 
 #[tauri::command]
-fn get_config_dir() -> Result<String, String> {
-    let config_dir = PathBuf::from("config");
+fn get_config_dir(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
     Ok(config_dir.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn save_app_config(state: State<AppState>) -> Result<String, String> {
+fn save_app_config(app_handle: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
     let mix = pipeline.mix_engine();
     let mix_config = mix.lock().map_err(|e| e.to_string())?.config().clone();
@@ -521,14 +521,16 @@ fn save_app_config(state: State<AppState>) -> Result<String, String> {
         ..app_config
     };
 
-    let config_path = PathBuf::from("config/app.toml");
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("app.toml");
     app_config.save(&config_path)?;
     Ok("Config saved".to_string())
 }
 
 #[tauri::command]
-fn load_app_config(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let config_path = PathBuf::from("config/app.toml");
+fn load_app_config(app_handle: tauri::AppHandle, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("app.toml");
     let config = audio::config::AppConfig::load(&config_path).unwrap_or_default();
 
     // Apply config to pipeline
@@ -554,16 +556,7 @@ pub fn run() {
     let mut plugin_manager = PluginManager::new(plugins_dir.clone());
     let playlist = Playlist::new("Default".to_string());
 
-    // Load shortcut config
-    let config_dir = PathBuf::from("config");
-    std::fs::create_dir_all(&config_dir).ok();
-    let shortcuts_path = config_dir.join("shortcuts.toml");
-    if !shortcuts_path.exists() {
-        let default_config = ShortcutConfig::default_shortcuts();
-        default_config.save(&shortcuts_path).ok();
-    }
-    let shortcut_config = ShortcutConfig::load(&shortcuts_path).unwrap_or_default();
-    let shortcut_engine = ShortcutEngine::new(shortcut_config);
+    let shortcut_engine = ShortcutEngine::new(ShortcutConfig::default_shortcuts());
 
     // Scan and load plugins on startup
     let graph = pipeline.graph();
@@ -589,6 +582,23 @@ pub fn run() {
             shortcut_engine: Mutex::new(shortcut_engine),
         })
         .setup(|app| {
+            // Initialize app config directory
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                std::fs::create_dir_all(&config_dir).ok();
+                let shortcuts_path = config_dir.join("shortcuts.toml");
+                if shortcuts_path.exists() {
+                    if let Ok(config) = ShortcutConfig::load(&shortcuts_path) {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            if let Ok(mut engine) = state.shortcut_engine.lock() {
+                                *engine = ShortcutEngine::new(config);
+                            }
+                        }
+                    }
+                } else {
+                    ShortcutConfig::default_shortcuts().save(&shortcuts_path).ok();
+                }
+            }
+
             // Start background event emission for player state updates
             let handle = app.handle().clone();
 

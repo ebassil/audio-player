@@ -173,7 +173,7 @@ document.addEventListener("DOMContentLoaded", () => {
   mixPatternSelect.addEventListener("change", async () => {
     await loggedInvoke("set_mix_config", {
       pattern: mixPatternSelect.value,
-      duration_secs: parseFloat(mixDurationSlider.value),
+      durationSecs: parseFloat(mixDurationSlider.value),
     });
     await saveAppConfig();
   });
@@ -183,7 +183,7 @@ document.addEventListener("DOMContentLoaded", () => {
     mixDurationLabel.textContent = `${val.toFixed(1)}s`;
     await loggedInvoke("set_mix_config", {
       pattern: mixPatternSelect.value,
-      duration_secs: val,
+      durationSecs: val,
     });
     await saveAppConfig();
   });
@@ -1293,7 +1293,7 @@ async function openSettingsPanel() {
     mixPattern.addEventListener("change", async () => {
       await loggedInvoke("set_mix_config", {
         pattern: mixPattern.value,
-        duration_secs: parseFloat(mixDuration.value),
+        durationSecs: parseFloat(mixDuration.value),
       });
     });
 
@@ -1302,7 +1302,7 @@ async function openSettingsPanel() {
       mixDurationLabel.textContent = `${val.toFixed(1)}s`;
       await loggedInvoke("set_mix_config", {
         pattern: mixPattern.value,
-        duration_secs: val,
+        durationSecs: val,
       });
     });
   } catch (err) {
