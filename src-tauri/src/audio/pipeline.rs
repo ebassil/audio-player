@@ -619,6 +619,11 @@ impl AudioPipeline {
         *self.current_track_index.lock().unwrap() = index;
     }
 
+    /// Get the current track index within the playlist context.
+    pub fn current_track_index(&self) -> Option<usize> {
+        *self.current_track_index.lock().unwrap()
+    }
+
     /// Take any pending track change index (for event emission).
     pub fn take_pending_track_change(&self) -> Option<usize> {
         self.pending_track_change.lock().unwrap().take()

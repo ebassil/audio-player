@@ -182,7 +182,11 @@ fn set_track_mix_points(
 // --- Playlist IPC Commands ---
 
 #[tauri::command]
-fn load_playlist(state: State<AppState>, path: String) -> Result<Vec<serde_json::Value>, String> {
+fn load_playlist(
+    app_handle: tauri::AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<Vec<serde_json::Value>, String> {
     let path_buf = PathBuf::from(&path);
     let playlist =
         audio::playlist::Playlist::load_json(&path_buf).map_err(|e| format!("Load error: {}", e))?;
@@ -199,6 +203,7 @@ fn load_playlist(state: State<AppState>, path: String) -> Result<Vec<serde_json:
         })
         .collect();
     *state.playlist.lock().map_err(|e| e.to_string())? = playlist;
+    save_playlist_state(&app_handle, &state);
     Ok(tracks)
 }
 
@@ -230,6 +235,7 @@ fn get_playlist_tracks(state: State<AppState>) -> Result<Vec<serde_json::Value>,
 
 #[tauri::command]
 fn set_playlist_tracks(
+    app_handle: tauri::AppHandle,
     state: State<AppState>,
     tracks: Vec<serde_json::Value>,
 ) -> Result<String, String> {
@@ -237,12 +243,19 @@ fn set_playlist_tracks(
         serde_json::from_value(serde_json::Value::Array(tracks))
             .map_err(|e| format!("Invalid track data: {}", e))?;
     let mut playlist = state.playlist.lock().map_err(|e| e.to_string())?;
+    let count = parsed.len();
     playlist.tracks = parsed;
-    Ok(format!("Playlist updated with {} track(s)", playlist.tracks.len()))
+    drop(playlist);
+    save_playlist_state(&app_handle, &state);
+    Ok(format!("Playlist updated with {} track(s)", count))
 }
 
 #[tauri::command]
-fn import_m3u8(state: State<AppState>, path: String) -> Result<Vec<serde_json::Value>, String> {
+fn import_m3u8(
+    app_handle: tauri::AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<Vec<serde_json::Value>, String> {
     let path_buf = PathBuf::from(&path);
     let playlist =
         audio::playlist::Playlist::import_m3u8(&path_buf).map_err(|e| format!("Import error: {}", e))?;
@@ -259,6 +272,7 @@ fn import_m3u8(state: State<AppState>, path: String) -> Result<Vec<serde_json::V
         })
         .collect();
     *state.playlist.lock().map_err(|e| e.to_string())? = playlist;
+    save_playlist_state(&app_handle, &state);
     Ok(tracks)
 }
 
@@ -272,6 +286,7 @@ fn export_m3u8(state: State<AppState>, path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn remove_tracks_from_playlist(
+    app_handle: tauri::AppHandle,
     state: State<AppState>,
     indices: Vec<usize>,
 ) -> Result<String, String> {
@@ -283,6 +298,8 @@ fn remove_tracks_from_playlist(
             playlist.tracks.remove(i);
         }
     }
+    drop(playlist);
+    save_playlist_state(&app_handle, &state);
     Ok(format!("Removed {} track(s)", indices.len()))
 }
 
@@ -310,12 +327,15 @@ fn set_playlist_context(
 
 #[tauri::command]
 fn set_current_track_index(
+    app_handle: tauri::AppHandle,
     state: State<AppState>,
     index: i32,
 ) -> Result<String, String> {
     let idx = if index < 0 { None } else { Some(index as usize) };
     let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
     pipeline.set_current_track_index(idx);
+    drop(pipeline);
+    save_playlist_state(&app_handle, &state);
     Ok(format!("Current track index set to {:?}", idx))
 }
 
@@ -550,6 +570,27 @@ fn load_app_config(app_handle: tauri::AppHandle, state: State<AppState>) -> Resu
     }))
 }
 
+fn save_playlist_state(app_handle: &tauri::AppHandle, state: &AppState) {
+    let config_dir = match app_handle.path().app_config_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let path = config_dir.join("playlist_state.json");
+    let playlist = match state.playlist.lock() {
+        Ok(p) => p.clone(),
+        Err(_) => return,
+    };
+    let current_track_index = match state.pipeline.lock() {
+        Ok(p) => p.current_track_index(),
+        Err(_) => return,
+    };
+    let state = audio::playlist_persist::PlaylistState {
+        playlist,
+        current_track_index,
+    };
+    let _ = state.save(&path);
+}
+
 pub fn run() {
     let pipeline = AudioPipeline::new();
     let plugins_dir = PathBuf::from("plugins");
@@ -596,6 +637,23 @@ pub fn run() {
                     }
                 } else {
                     ShortcutConfig::default_shortcuts().save(&shortcuts_path).ok();
+                }
+            }
+
+            // Restore persisted playlist state
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                let playlist_path = config_dir.join("playlist_state.json");
+                if playlist_path.exists() {
+                    if let Ok(loaded) = audio::playlist_persist::PlaylistState::load(&playlist_path) {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            if let Ok(mut p) = state.playlist.lock() {
+                                *p = loaded.playlist;
+                            }
+                            if let Ok(pipeline) = state.pipeline.lock() {
+                                pipeline.set_current_track_index(loaded.current_track_index);
+                            }
+                        }
+                    }
                 }
             }
 

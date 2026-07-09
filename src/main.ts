@@ -202,6 +202,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initPluginRack();
   loadMixConfig();
   initPlaylist();
+  loadInitialPlaylist();
   initGlobalShortcuts();
   initPlayerEvents();
   loadAppConfig();
@@ -479,6 +480,19 @@ async function syncTrackIndex() {
     await loggedInvoke("set_current_track_index", { index: selectedTrackIndex !== null ? selectedTrackIndex : -1 });
   } catch (err) {
     console.error("Failed to sync track index:", err);
+  }
+}
+
+async function loadInitialPlaylist() {
+  try {
+    const tracks: PlaylistTrack[] = await loggedInvoke("get_playlist_tracks");
+    currentTracks = tracks;
+    if (tracks.length > 0) {
+      await syncPlaylistContext();
+    }
+    renderPlaylist();
+  } catch (err) {
+    console.error("Failed to load initial playlist:", err);
   }
 }
 

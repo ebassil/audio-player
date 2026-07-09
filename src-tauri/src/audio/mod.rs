@@ -6,6 +6,7 @@ pub mod graph;
 pub mod mixing;
 pub mod output;
 pub mod playlist;
+pub mod playlist_persist;
 pub mod pipeline;
 pub mod player;
 pub mod ringbuf;
