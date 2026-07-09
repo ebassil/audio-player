@@ -11,6 +11,30 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+/// Resample interleaved f32 audio from `src_frames` to `dst_frames` using linear interpolation.
+fn resample(src: &[f32], src_frames: usize, dst_frames: usize, channels: usize) -> Vec<f32> {
+    if src_frames == dst_frames || src_frames == 0 || dst_frames == 0 {
+        return src.to_vec();
+    }
+    let mut out = Vec::with_capacity(dst_frames * channels);
+    let ratio = src_frames as f64 / dst_frames as f64;
+    for i in 0..dst_frames {
+        let pos = i as f64 * ratio;
+        let idx = pos as usize;
+        let frac = (pos - idx as f64) as f32;
+        for ch in 0..channels {
+            let a = src[idx * channels + ch];
+            let b = if idx + 1 < src_frames {
+                src[(idx + 1) * channels + ch]
+            } else {
+                a
+            };
+            out.push(a + (b - a) * frac);
+        }
+    }
+    out
+}
+
 /// Track metadata returned by `load_track`.
 #[derive(Clone, Debug)]
 pub struct TrackMetadata {
@@ -206,8 +230,23 @@ impl AudioPipeline {
 
                         let channels = current.channels();
                         // read() is lock-free (ring buffer pop) — safe in audio callback
-                        let cur_samples = current.read(num_frames as usize);
-                        let nxt_samples = next.read(num_frames as usize);
+                        let dst_rate = output_sample_rate.load(Ordering::Relaxed);
+                        let cur_src_rate = current.sample_rate();
+                        let nxt_src_rate = next.sample_rate();
+                        let cur_samples = if cur_src_rate != dst_rate {
+                            let src_frames = (num_frames as f64 * cur_src_rate as f64 / dst_rate as f64).max(1.0) as usize;
+                            let raw = current.read(src_frames);
+                            resample(&raw, src_frames, num_frames as usize, channels)
+                        } else {
+                            current.read(num_frames as usize)
+                        };
+                        let nxt_samples = if nxt_src_rate != dst_rate {
+                            let src_frames = (num_frames as f64 * nxt_src_rate as f64 / dst_rate as f64).max(1.0) as usize;
+                            let raw = next.read(src_frames);
+                            resample(&raw, src_frames, num_frames as usize, channels)
+                        } else {
+                            next.read(num_frames as usize)
+                        };
 
                         let mut phase = transition_phase.lock().unwrap();
                         if let TransitionPhase::Transitioning { out_gain, in_gain, cursor } = &mut *phase {
@@ -245,15 +284,22 @@ impl AudioPipeline {
                         }
                     } else {
                         // --- Normal phase: read from current decoder (lock-free) ---
-                            let (samples, _, position, duration) = {
+                            let (samples, position, duration) = {
                             let guard = current_decoder.lock().unwrap();
                             match guard.as_ref() {
                                 Some(d) => {
-                                    let s = d.read(num_frames as usize);
-                                    let c = d.channels();
+                                    let src_rate = d.sample_rate();
+                                    let dst_rate = output_sample_rate.load(Ordering::Relaxed);
+                                    let s = if src_rate != dst_rate {
+                                        let src_frames = (num_frames as f64 * src_rate as f64 / dst_rate as f64).max(1.0) as usize;
+                                        let raw = d.read(src_frames);
+                                        resample(&raw, src_frames, num_frames as usize, d.channels())
+                                    } else {
+                                        d.read(num_frames as usize)
+                                    };
                                     let p = d.position_secs();
                                     let dur = d.duration_secs();
-                                    (s, c, p, dur)
+                                    (s, p, dur)
                                 }
                                 None => return vec![0.0; num_frames as usize * 2],
                             }
@@ -438,6 +484,9 @@ impl AudioPipeline {
             let output = self.output.lock().unwrap();
             output.config().sample_rate
         }, Ordering::Relaxed);
+        self.graph.lock().unwrap().set_sample_rate(
+            self.output_sample_rate.load(Ordering::Relaxed) as f64
+        );
         self.running.store(true, Ordering::SeqCst);
 
         // Start background monitor thread for device changes
