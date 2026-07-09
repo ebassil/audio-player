@@ -19,7 +19,7 @@ Each track in the playlist SHALL support an optional mix pattern override stored
 
 ### Requirement: Per-track mix duration override
 
-Each track in the playlist SHALL support an optional mix duration override stored in the playlist state JSON. When set, this override SHALL be used instead of the default mix duration from the application config when transitioning from this track to the next.
+Each track in the playlist SHALL support an optional mix duration override stored in the playlist state JSON. When set, this override SHALL be used instead of the default mix duration from the application config when transitioning from this track to the next. The mix duration override SHALL be capped at 15.0 seconds — values above 15.0 SHALL be clamped — unless a `mix_out` point is defined for the track. When `mix_out` is defined, the effective mix duration SHALL be `track_duration - mix_out_point` and the 15.0-second cap SHALL NOT apply.
 
 #### Scenario: Track has mix duration override
 - **WHEN** a track in the playlist has `mix_duration_override` set to `5.0`

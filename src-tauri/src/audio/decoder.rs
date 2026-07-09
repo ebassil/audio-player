@@ -357,7 +357,10 @@ impl BufferedDecoder {
                             Ordering::Relaxed,
                         );
                         shared.ring_buf.clear();
-                        shared.consumed_frames.store(0, Ordering::Relaxed);
+                        shared.consumed_frames.store(
+                            (pos * decoder.sample_rate() as f64) as u64,
+                            Ordering::Relaxed,
+                        );
                         shared.eof.store(false, Ordering::Relaxed);
                     }
 

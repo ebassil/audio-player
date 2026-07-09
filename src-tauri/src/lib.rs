@@ -141,7 +141,7 @@ fn set_mix_config(
     };
     let config = MixConfig {
         pattern: mix_pattern,
-        duration_secs,
+        duration_secs: duration_secs.clamp(1.0, 15.0),
     };
     let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
     let mix = pipeline.mix_engine();
@@ -552,7 +552,7 @@ fn set_current_track_mix_overrides(
     match index.and_then(|i| playlist.tracks.get_mut(i)) {
         Some(track) => {
             track.mix_pattern_override = pattern_override.clone();
-            track.mix_duration_override = duration_override;
+            track.mix_duration_override = duration_override.map(|d| d.clamp(1.0, 15.0));
             drop(playlist);
             drop(pipeline);
             save_playlist_state(&app_handle, &state);

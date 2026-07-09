@@ -83,7 +83,9 @@ impl MixEngine {
         duration_override: Option<f64>,
     ) -> ResolvedMix {
         let pattern = pattern_override.unwrap_or(self.config.pattern);
-        let duration = duration_override.unwrap_or(self.config.duration_secs);
+        let duration = duration_override
+            .map(|d| d.clamp(1.0, 15.0))
+            .unwrap_or(self.config.duration_secs);
 
         // Per-song mix points override the default duration for that transition
         let mix_out_point = current_track_mix.mix_out;

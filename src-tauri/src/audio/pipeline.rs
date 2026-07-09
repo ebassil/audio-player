@@ -286,26 +286,26 @@ impl AudioPipeline {
                         }
                     } else {
                         // --- Normal phase: read from current decoder (lock-free) ---
-                            let (samples, position, duration) = {
-                            let guard = current_decoder.lock().unwrap();
-                            match guard.as_ref() {
-                                Some(d) => {
-                                    let src_rate = d.sample_rate();
-                                    let dst_rate = output_sample_rate.load(Ordering::Relaxed);
-                                    let s = if src_rate != dst_rate {
-                                        let src_frames = (num_frames as f64 * src_rate as f64 / dst_rate as f64).max(1.0) as usize;
-                                        let raw = d.read(src_frames);
-                                        resample(&raw, src_frames, num_frames as usize, d.channels())
-                                    } else {
-                                        d.read(num_frames as usize)
-                                    };
-                                    let p = d.position_secs();
-                                    let dur = d.duration_secs();
-                                    (s, p, dur)
-                                }
-                                None => return vec![0.0; num_frames as usize * 2],
-                            }
-                        };
+        let (samples, position, duration) = {
+            let guard = current_decoder.lock().unwrap();
+            match guard.as_ref() {
+                Some(d) => {
+                    let src_rate = d.sample_rate();
+                    let dst_rate = output_sample_rate.load(Ordering::Relaxed);
+                    let s = if src_rate != dst_rate {
+                        let src_frames = (num_frames as f64 * src_rate as f64 / dst_rate as f64).max(1.0) as usize;
+                        let raw = d.read(src_frames);
+                        resample(&raw, src_frames, num_frames as usize, d.channels())
+                    } else {
+                        d.read(num_frames as usize)
+                    };
+                    let p = d.playback_position_secs();
+                    let dur = d.duration_secs();
+                    (s, p, dur)
+                }
+                None => return vec![0.0; num_frames as usize * 2],
+            }
+        };
 
                         // Check if a previously-requested async load has completed.
                         let load_was_requested = transition_load_requested.load(Ordering::Relaxed);
@@ -317,17 +317,43 @@ impl AudioPipeline {
                             if let Some((_, ref r, track_duration, _trigger_position)) =
                                 *pending_transition_info.lock().unwrap()
                             {
-                                // Recalculate effective duration using current playback
-                                // position (accounts for async load delay).
+                                // Recalculate position (accounts for async load delay).
                                 let playback_pos = {
                                     let guard = current_decoder.lock().unwrap();
                                     guard.as_ref().map(|d| d.playback_position_secs()).unwrap_or(0.0)
                                 };
                                 let remaining = track_duration - playback_pos;
-                                let effective_duration = r.duration_secs.min(remaining);
-                                let total_frames = (effective_duration
+
+                                let excess_raw = r.duration_secs - remaining;
+                                let excess = if excess_raw.is_finite() {
+                                    excess_raw.max(0.0)
+                                } else {
+                                    0.0
+                                };
+                                let next_offset = r.mix_in_point.map_or(excess, |m| {
+                                    let raw = m + excess;
+                                    if raw.is_finite() { raw.max(0.0) } else { 0.0 }
+                                });
+
+                                let mix_duration = if let Some(mix_out) = r.mix_out_point {
+                                    (track_duration - mix_out).max(0.0)
+                                } else {
+                                    r.duration_secs.min(15.0)
+                                };
+                                let total_frames = (mix_duration
                                     * output_sample_rate.load(Ordering::Relaxed) as f64)
                                     as usize;
+
+                                if next_offset > 0.0 {
+                                    let nxt_guard = next_decoder.lock().unwrap();
+                                    if let Some(ref next) = *nxt_guard {
+                                        let max_offset = (next.duration_secs() - 0.001).max(0.0);
+                                        let clamped = next_offset.min(max_offset).max(0.0);
+                                        next.seek(clamped);
+                                    }
+                                    drop(nxt_guard);
+                                }
+
                                 let (out_gain, in_gain) = match r.pattern {
                                     MixPattern::CrossFade => {
                                         MixEngine::cross_fade_envelope(total_frames, total_frames)
@@ -375,7 +401,6 @@ impl AudioPipeline {
                                     in_gain,
                                     cursor: 0,
                                 };
-                                // Return current-track samples; transition takes effect next frame
                                 return samples;
                             }
                         }
@@ -394,40 +419,33 @@ impl AudioPipeline {
                                 && duration > 0.0
                                 && !load_was_requested
                             {
-                                let mix_eng = mix_engine.lock().unwrap();
-                                let mix_duration = mix_eng.config().duration_secs;
-                                let trigger = mix_points
-                                    .lock()
-                                    .unwrap()
-                                    .0
-                                    .map(|mo| mo.min(duration))
-                                    .unwrap_or_else(|| (duration - mix_duration).max(0.0));
-                                let should_start = position >= trigger;
-
-                                if should_start {
-                                    if let Some(index) = idx {
-                                        if index + 1 < ctx.len() {
-                                            let current_entry = &ctx[index];
-                                            let next_entry = &ctx[index + 1];
-                                            let current_mix = MixPoint {
-                                                mix_out: mix_points.lock().unwrap().0,
-                                                mix_in: None,
-                                            };
-                                            let next_mix = MixPoint {
-                                                mix_out: None,
-                                                mix_in: next_entry.mix_in,
-                                            };
-                                            let pattern_override = current_entry.mix_pattern_override.as_deref().and_then(|s| match s.to_lowercase().as_str() {
-                                                "fade" => Some(MixPattern::Fade),
-                                                "crossfade" | "cross_fade" => Some(MixPattern::CrossFade),
-                                                "hardfade" | "hard_fade" => Some(MixPattern::HardFade),
-                                                _ => None,
-                                            });
-                                            let duration_override = current_entry.mix_duration_override;
-                                            let r = mix_eng.resolve(&current_mix, &next_mix, pattern_override, duration_override);
+                                if let Some(index) = idx {
+                                    if index + 1 < ctx.len() {
+                                        let current_entry = &ctx[index];
+                                        let next_entry = &ctx[index + 1];
+                                        let current_mix = MixPoint {
+                                            mix_out: mix_points.lock().unwrap().0,
+                                            mix_in: None,
+                                        };
+                                        let next_mix = MixPoint {
+                                            mix_out: None,
+                                            mix_in: next_entry.mix_in,
+                                        };
+                                        let pattern_override = current_entry.mix_pattern_override.as_deref().and_then(|s| match s.to_lowercase().as_str() {
+                                            "fade" => Some(MixPattern::Fade),
+                                            "crossfade" | "cross_fade" => Some(MixPattern::CrossFade),
+                                            "hardfade" | "hard_fade" => Some(MixPattern::HardFade),
+                                            _ => None,
+                                        });
+                                        let duration_override = current_entry.mix_duration_override;
+                                        let mix_eng = mix_engine.lock().unwrap();
+                                        let r = mix_eng.resolve(&current_mix, &next_mix, pattern_override, duration_override);
+                                        let trigger = r.mix_out_point
+                                            .map(|mo| mo.min(duration))
+                                            .unwrap_or_else(|| (duration - r.duration_secs).max(0.0));
+                                        if position >= trigger {
                                             let trigger_position = position;
-                                            resolved =
-                                                Some((index, r, duration, trigger_position));
+                                            resolved = Some((index, r, duration, trigger_position));
                                             should_load = true;
                                         }
                                     }
@@ -576,16 +594,22 @@ impl AudioPipeline {
         Arc::clone(&self.graph)
     }
 
-    /// Get current playback progress (0.0 to 1.0).
+    /// Get current playback progress (0.0 to 1.0, based on consumed frames).
     pub fn progress(&self) -> f64 {
         let decoder = self.current_decoder.lock().unwrap();
-        decoder.as_ref().map_or(0.0, |d| d.progress())
+        decoder.as_ref().map_or(0.0, |d| {
+            let pos = d.playback_position_secs();
+            let dur = d.duration_secs();
+            if dur <= 0.0 { 0.0 } else { (pos / dur).clamp(0.0, 1.0) }
+        })
     }
 
-    /// Get the current position in seconds.
+    /// Get the current position in seconds (based on frames consumed by audio callback).
     pub fn position_secs(&self) -> f64 {
         let decoder = self.current_decoder.lock().unwrap();
-        decoder.as_ref().map_or(0.0, |d| d.position_secs())
+        decoder.as_ref().map_or(0.0, |d| {
+            d.playback_position_secs().min(d.duration_secs())
+        })
     }
 
     /// Get the duration of the current track in seconds.

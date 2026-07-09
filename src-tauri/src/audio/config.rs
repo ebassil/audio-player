@@ -67,7 +67,7 @@ impl AppConfig {
         };
         MixConfig {
             pattern,
-            duration_secs: self.mix_duration_secs,
+            duration_secs: self.mix_duration_secs.clamp(1.0, 15.0),
         }
     }
 
