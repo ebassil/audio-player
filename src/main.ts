@@ -933,6 +933,9 @@ let logPanelVisible = false;
 let lastPlayerStatusLog = 0;
 
 let logAutoScroll = true;
+let logFilterNames = "";
+let logFilterRegex = "";
+let logFilterRegexObj: RegExp | null = null;
 
 function addLogEntry(entry: LogEntry) {
   logEntries.push(entry);
@@ -946,7 +949,8 @@ function addLogEntry(entry: LogEntry) {
   if (logPanelVisible) {
     const entriesDiv = document.getElementById("log-entries");
     if (entriesDiv) {
-      entriesDiv.appendChild(createLogEntryElement(entry));
+      const el = createLogEntryElement(entry);
+      if (el) entriesDiv.appendChild(el);
       if (logAutoScroll) {
         entriesDiv.scrollTop = entriesDiv.scrollHeight;
       }
@@ -979,7 +983,8 @@ async function loggedInvoke<T>(command: string, args?: Record<string, unknown>):
   }
 }
 
-function createLogEntryElement(entry: LogEntry): HTMLElement {
+function createLogEntryElement(entry: LogEntry): HTMLElement | null {
+  if (shouldFilterEntry(entry)) return null;
   const div = document.createElement("div");
   div.className = `log-entry log-${entry.status}`;
   div.innerHTML = `
@@ -1001,7 +1006,7 @@ function renderLogPanel() {
         <button id="btn-log-clear" class="log-btn-small">Clear</button>
       </div>
       <div class="log-entries" id="log-entries">
-        ${logEntries.map(e => `
+        ${logEntries.filter(e => !shouldFilterEntry(e)).map(e => `
           <div class="log-entry log-${e.status}">
             <span class="log-time">${e.timestamp.slice(11, 23)}</span>
             <span class="log-dir">${e.direction}</span>
@@ -1031,6 +1036,29 @@ function renderLogPanel() {
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function shouldFilterEntry(entry: LogEntry): boolean {
+  if (logFilterNames) {
+    const names = logFilterNames.split(",").map(n => n.trim()).filter(Boolean);
+    if (names.includes(entry.name)) return true;
+  }
+  if (logFilterRegexObj) {
+    const text = `${entry.timestamp} ${entry.direction} ${entry.name} ${entry.detail}`;
+    if (logFilterRegexObj.test(text)) return true;
+  }
+  return false;
+}
+
+function updateLogFilters() {
+  try {
+    logFilterRegexObj = logFilterRegex ? new RegExp(logFilterRegex) : null;
+  } catch {
+    logFilterRegexObj = null;
+  }
+  if (logPanelVisible) {
+    renderLogPanel();
+  }
 }
 
 function toggleLogPanel() {
@@ -1221,6 +1249,18 @@ async function openSettingsPanel() {
         </section>
 
         <section class="settings-section">
+          <h4>Log Filters <span class="info-icon" title="">ⓘ</span></h4>
+          <div class="setting-row">
+            <label>Message Names:</label>
+            <input type="text" id="settings-log-filter-names" placeholder="e.g. player-status, audio-log" value="${logFilterNames}" />
+          </div>
+          <div class="setting-row">
+            <label>Regex:</label>
+            <input type="text" id="settings-log-filter-regex" placeholder="e.g. state=Stopped" value="${logFilterRegex}" />
+          </div>
+        </section>
+
+        <section class="settings-section">
           <h4>Mix Defaults</h4>
           <div class="setting-row">
             <label>Default Mix Pattern:</label>
@@ -1319,6 +1359,20 @@ async function openSettingsPanel() {
         pattern: mixPattern.value,
         durationSecs: val,
       });
+    });
+
+    // Log filters
+    const filterNamesInput = document.getElementById("settings-log-filter-names") as HTMLInputElement;
+    const filterRegexInput = document.getElementById("settings-log-filter-regex") as HTMLInputElement;
+
+    filterNamesInput.addEventListener("input", () => {
+      logFilterNames = filterNamesInput.value;
+      updateLogFilters();
+    });
+
+    filterRegexInput.addEventListener("input", () => {
+      logFilterRegex = filterRegexInput.value;
+      updateLogFilters();
     });
   } catch (err) {
     container.innerHTML = `<p class="error">Failed to load settings: ${err}</p>`;

@@ -42,6 +42,20 @@ The system SHALL provide a toggleable timestamped log panel in the main content 
 - **WHEN** the number of log entries exceeds 1000
 - **THEN** the oldest entries are evicted to maintain the buffer limit
 
+#### Scenario: Filter by message name
+- **WHEN** the user configures a message name filter (e.g., `player-status`)
+- **THEN** log entries whose name equals the configured value are hidden from the log display
+- **AND** hidden entries remain in the buffer and reappear if the filter is cleared
+
+#### Scenario: Filter by regex
+- **WHEN** the user configures a regex filter
+- **THEN** log entries whose rendered text matches the regex are hidden from the log display
+
+#### Scenario: Filter hides entries from render
+- **WHEN** `renderLogPanel()` or `createLogEntryElement()` is called
+- **THEN** filtered entries are not rendered as DOM elements
+- **AND** the log appears as if those entries never existed
+
 #### Scenario: Throttled player-status events
 - **WHEN** `player-status` events are received at 250ms intervals
 - **THEN** only one log entry per second is recorded for this event type to avoid flooding
