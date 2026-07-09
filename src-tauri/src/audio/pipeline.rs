@@ -73,8 +73,10 @@ pub struct AudioPipeline {
     graph: Arc<Mutex<AudioGraph>>,
     /// Audio output to the system default device.
     output: Arc<Mutex<AudioOutput>>,
-    /// Shared volume state.
+    /// Shared volume state (owned for getter access).
     volume: VolumeState,
+    /// Shared volume state behind Arc for the audio callback closure.
+    volume_state: Arc<VolumeState>,
     /// Current playback state.
     playback_state: Arc<Mutex<PlaybackState>>,
     /// The current buffered decoder (None when no track is loaded).
@@ -109,12 +111,13 @@ impl AudioPipeline {
     /// Create a new audio pipeline.
     pub fn new() -> Self {
         let sample_rate = 44100.0;
-        let volume = VolumeState::new();
+        let volume_state = Arc::new(VolumeState::new());
 
         Self {
             graph: Arc::new(Mutex::new(AudioGraph::new(sample_rate))),
             output: Arc::new(Mutex::new(AudioOutput::new())),
-            volume,
+            volume: (*volume_state).clone(),
+            volume_state,
             playback_state: Arc::new(Mutex::new(PlaybackState::Stopped)),
             current_decoder: Arc::new(Mutex::new(None)),
             next_decoder: Arc::new(Mutex::new(None)),
@@ -198,6 +201,7 @@ impl AudioPipeline {
         let pending_track_change = Arc::clone(&self.pending_track_change);
         let transition_load_requested = Arc::clone(&self.transition_load_requested);
         let pending_transition_info = Arc::clone(&self.pending_transition_info);
+        let volume_state = Arc::clone(&self.volume_state);
 
         let output_sample_rate = Arc::clone(&self.output_sample_rate);
 
@@ -280,13 +284,19 @@ impl AudioPipeline {
                                 }
                                 *phase = TransitionPhase::Normal;
                             }
+                            let gain = volume_state.effective_gain() as f32;
+                            if gain != 1.0 {
+                                for s in &mut output {
+                                    *s *= gain;
+                                }
+                            }
                             output
                         } else {
                             vec![0.0; num_frames as usize * channels]
                         }
                     } else {
                         // --- Normal phase: read from current decoder (lock-free) ---
-        let (samples, position, duration) = {
+        let (mut samples, position, duration) = {
             let guard = current_decoder.lock().unwrap();
             match guard.as_ref() {
                 Some(d) => {
@@ -493,6 +503,12 @@ impl AudioPipeline {
                             *playback_state.lock().unwrap() = PlaybackState::Stopped;
                         }
 
+                        let gain = volume_state.effective_gain() as f32;
+                        if gain != 1.0 {
+                            for s in &mut samples {
+                                *s *= gain;
+                            }
+                        }
                         samples
                     }
                 }
