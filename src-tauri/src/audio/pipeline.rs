@@ -49,6 +49,8 @@ pub struct PlaylistContextEntry {
     pub file_path: String,
     pub mix_out: Option<f64>,
     pub mix_in: Option<f64>,
+    pub mix_pattern_override: Option<String>,
+    pub mix_duration_override: Option<f64>,
 }
 
 /// Internal phase of a track-to-track transition.
@@ -82,7 +84,7 @@ pub struct AudioPipeline {
     /// Whether a transition decoder load has been requested (prevents duplicate spawns).
     transition_load_requested: Arc<AtomicBool>,
     /// Resolved transition info stored while the next decoder is loading asynchronously.
-    pending_transition_info: Arc<Mutex<Option<(usize, ResolvedMix, f64)>>>,
+    pending_transition_info: Arc<Mutex<Option<(usize, ResolvedMix, f64, f64)>>>,
     /// Whether the playback thread should keep running.
     running: Arc<AtomicBool>,
     /// Sample rate of the audio output device.
@@ -312,9 +314,17 @@ impl AudioPipeline {
                         if load_was_requested && next_is_ready {
                             // Next decoder loaded asynchronously — start transition now.
                             transition_load_requested.store(false, Ordering::Relaxed);
-                            if let Some((_, ref r, effective_duration)) =
+                            if let Some((_, ref r, track_duration, _trigger_position)) =
                                 *pending_transition_info.lock().unwrap()
                             {
+                                // Recalculate effective duration using current playback
+                                // position (accounts for async load delay).
+                                let playback_pos = {
+                                    let guard = current_decoder.lock().unwrap();
+                                    guard.as_ref().map(|d| d.playback_position_secs()).unwrap_or(0.0)
+                                };
+                                let remaining = track_duration - playback_pos;
+                                let effective_duration = r.duration_secs.min(remaining);
                                 let total_frames = (effective_duration
                                     * output_sample_rate.load(Ordering::Relaxed) as f64)
                                     as usize;
@@ -373,8 +383,9 @@ impl AudioPipeline {
                         // Check if we should trigger a transition (before EOF).
                         // If trigger fires, spawn a background thread to load the next decoder
                         // so the audio callback never blocks on I/O.
+
                         let mut should_load = false;
-                        let mut resolved: Option<(usize, ResolvedMix, f64)> = None;
+                        let mut resolved: Option<(usize, ResolvedMix, f64, f64)> = None;
                         {
                             let ctx = playlist_context.lock().unwrap();
                             let idx = *current_track_index.lock().unwrap();
@@ -396,6 +407,7 @@ impl AudioPipeline {
                                 if should_start {
                                     if let Some(index) = idx {
                                         if index + 1 < ctx.len() {
+                                            let current_entry = &ctx[index];
                                             let next_entry = &ctx[index + 1];
                                             let current_mix = MixPoint {
                                                 mix_out: mix_points.lock().unwrap().0,
@@ -405,12 +417,17 @@ impl AudioPipeline {
                                                 mix_out: None,
                                                 mix_in: next_entry.mix_in,
                                             };
-                                            let r = mix_eng.resolve(&current_mix, &next_mix);
-                                            let remaining = duration - position;
-                                            let effective_duration =
-                                                r.duration_secs.min(remaining);
+                                            let pattern_override = current_entry.mix_pattern_override.as_deref().and_then(|s| match s.to_lowercase().as_str() {
+                                                "fade" => Some(MixPattern::Fade),
+                                                "crossfade" | "cross_fade" => Some(MixPattern::CrossFade),
+                                                "hardfade" | "hard_fade" => Some(MixPattern::HardFade),
+                                                _ => None,
+                                            });
+                                            let duration_override = current_entry.mix_duration_override;
+                                            let r = mix_eng.resolve(&current_mix, &next_mix, pattern_override, duration_override);
+                                            let trigger_position = position;
                                             resolved =
-                                                Some((index, r, effective_duration));
+                                                Some((index, r, duration, trigger_position));
                                             should_load = true;
                                         }
                                     }
@@ -419,11 +436,11 @@ impl AudioPipeline {
                         }
 
                         if should_load {
-                            if let Some((index, ref r, effective_duration)) = resolved {
+                            if let Some((index, ref r, track_duration, trigger_pos)) = resolved {
                                 transition_load_requested
                                     .store(true, Ordering::Relaxed);
                                 *pending_transition_info.lock().unwrap() =
-                                    Some((index, r.clone(), effective_duration));
+                                    Some((index, r.clone(), track_duration, trigger_pos));
 
                                 let ctx = playlist_context.lock().unwrap();
                                 if index + 1 < ctx.len() {

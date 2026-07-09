@@ -92,4 +92,58 @@ impl AudioRingBuf {
         let tail = self.tail.load(Ordering::Acquire);
         self.head.store(tail, Ordering::Release);
     }
+
+    /// Total number of samples consumed (popped) so far.
+    ///
+    /// The value is the raw `head` counter and wraps at `usize::MAX`.
+    /// For practical purposes up to millions of hours of audio, this is monotonic.
+    pub fn consumed(&self) -> usize {
+        self.head.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_consumed_starts_at_zero() {
+        let buf = AudioRingBuf::new(4);
+        assert_eq!(buf.consumed(), 0);
+    }
+
+    #[test]
+    fn test_consumed_increases_with_pops() {
+        let buf = AudioRingBuf::new(64);
+        // Push some data first
+        let data = vec![1.0; 32];
+        buf.push(&data);
+        // Pop half
+        let mut out = vec![0.0; 16];
+        let n = buf.pop(&mut out);
+        assert_eq!(n, 16);
+        assert_eq!(buf.consumed(), 16);
+        // Pop the rest
+        let mut out = vec![0.0; 32];
+        let n = buf.pop(&mut out);
+        assert_eq!(n, 16);
+        assert_eq!(buf.consumed(), 32);
+    }
+
+    #[test]
+    fn test_consumed_monotonic_across_wraps() {
+        let buf = AudioRingBuf::new(4);
+        let data = vec![1.0; 4];
+        let mut out = vec![0.0; 4];
+        let mut prev = 0;
+        for _ in 0..10 {
+            buf.push(&data);
+            let n = buf.pop(&mut out);
+            assert_eq!(n, 4);
+            let c = buf.consumed();
+            assert!(c >= prev, "consumed should be monotonic");
+            prev = c;
+        }
+        assert!(buf.consumed() >= 40);
+    }
 }

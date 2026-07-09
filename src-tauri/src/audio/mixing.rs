@@ -79,9 +79,11 @@ impl MixEngine {
         &self,
         current_track_mix: &MixPoint,
         next_track_mix: &MixPoint,
+        pattern_override: Option<MixPattern>,
+        duration_override: Option<f64>,
     ) -> ResolvedMix {
-        let pattern = self.config.pattern;
-        let duration = self.config.duration_secs;
+        let pattern = pattern_override.unwrap_or(self.config.pattern);
+        let duration = duration_override.unwrap_or(self.config.duration_secs);
 
         // Per-song mix points override the default duration for that transition
         let mix_out_point = current_track_mix.mix_out;
@@ -224,7 +226,7 @@ mod tests {
     #[test]
     fn test_resolve_uses_defaults() {
         let engine = MixEngine::new(MixConfig::default());
-        let resolved = engine.resolve(&MixPoint::new(), &MixPoint::new());
+        let resolved = engine.resolve(&MixPoint::new(), &MixPoint::new(), None, None);
         assert_eq!(resolved.pattern, MixPattern::CrossFade);
         assert_eq!(resolved.duration_secs, 3.0);
     }
@@ -240,8 +242,47 @@ mod tests {
             mix_out: None,
             mix_in: Some(30.0),
         };
-        let resolved = engine.resolve(&current, &next);
+        let resolved = engine.resolve(&current, &next, None, None);
         assert_eq!(resolved.mix_out_point, Some(120.0));
         assert_eq!(resolved.mix_in_point, Some(30.0));
+    }
+
+    #[test]
+    fn test_resolve_uses_pattern_override() {
+        let engine = MixEngine::new(MixConfig::default());
+        let resolved = engine.resolve(
+            &MixPoint::new(),
+            &MixPoint::new(),
+            Some(MixPattern::Fade),
+            None,
+        );
+        assert_eq!(resolved.pattern, MixPattern::Fade);
+        assert_eq!(resolved.duration_secs, 3.0);
+    }
+
+    #[test]
+    fn test_resolve_uses_duration_override() {
+        let engine = MixEngine::new(MixConfig::default());
+        let resolved = engine.resolve(
+            &MixPoint::new(),
+            &MixPoint::new(),
+            None,
+            Some(7.5),
+        );
+        assert_eq!(resolved.pattern, MixPattern::CrossFade);
+        assert!((resolved.duration_secs - 7.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_resolve_uses_both_overrides() {
+        let engine = MixEngine::new(MixConfig::default());
+        let resolved = engine.resolve(
+            &MixPoint::new(),
+            &MixPoint::new(),
+            Some(MixPattern::HardFade),
+            Some(12.0),
+        );
+        assert_eq!(resolved.pattern, MixPattern::HardFade);
+        assert!((resolved.duration_secs - 12.0).abs() < f64::EPSILON);
     }
 }

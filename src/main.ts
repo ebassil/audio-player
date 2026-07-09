@@ -30,6 +30,7 @@ interface PlaylistTrack {
   file_path: string;
   mix_points: { mix_out: number | null; mix_in: number | null } | null;
   mix_pattern_override: string | null;
+  mix_duration_override: number | null;
   metadata: { title: string | null; artist: string | null; album: string | null; duration_secs: number | null } | null;
 }
 
@@ -171,21 +172,19 @@ document.addEventListener("DOMContentLoaded", () => {
   const mixDurationLabel = document.getElementById("mix-duration-label")!;
 
   mixPatternSelect.addEventListener("change", async () => {
-    await loggedInvoke("set_mix_config", {
-      pattern: mixPatternSelect.value,
-      durationSecs: parseFloat(mixDurationSlider.value),
+    await loggedInvoke("set_current_track_mix_overrides", {
+      patternOverride: mixPatternSelect.value,
+      durationOverride: parseFloat(mixDurationSlider.value),
     });
-    await saveAppConfig();
   });
 
   mixDurationSlider.addEventListener("input", async () => {
     const val = parseFloat(mixDurationSlider.value);
     mixDurationLabel.textContent = `${val.toFixed(1)}s`;
-    await loggedInvoke("set_mix_config", {
-      pattern: mixPatternSelect.value,
-      durationSecs: val,
+    await loggedInvoke("set_current_track_mix_overrides", {
+      patternOverride: mixPatternSelect.value,
+      durationOverride: val,
     });
-    await saveAppConfig();
   });
 
   document.getElementById("btn-set-mix-out")?.addEventListener("click", () => {
@@ -200,7 +199,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initialize plugin rack
   initPluginRack();
-  loadMixConfig();
   initPlaylist();
   loadInitialPlaylist();
   initGlobalShortcuts();
@@ -351,6 +349,7 @@ async function loadDirectory() {
       file_path: f,
       mix_points: null,
       mix_pattern_override: null,
+      mix_duration_override: null,
       metadata: null,
     }));
     currentTracks = tracks;
@@ -457,6 +456,7 @@ async function loadTrack(filePath: string) {
     await loggedInvoke("load_track", { path: filePath });
     await loggedInvoke("play");
     await syncTrackIndex();
+    await loadCurrentTrackMixConfig();
   } catch (err) {
     console.error("Failed to load track:", err);
   }
@@ -468,6 +468,8 @@ async function syncPlaylistContext() {
       file_path: t.file_path,
       mix_out: t.mix_points?.mix_out ?? null,
       mix_in: t.mix_points?.mix_in ?? null,
+      mix_pattern_override: t.mix_pattern_override ?? null,
+      mix_duration_override: t.mix_duration_override ?? null,
     }));
     await loggedInvoke("set_playlist_context", { entries });
   } catch (err) {
@@ -547,6 +549,7 @@ function setupPlaylistDragDrop() {
       file_path: f,
       mix_points: null,
       mix_pattern_override: null,
+      mix_duration_override: null,
       metadata: null,
     }));
     currentTracks = [...currentTracks, ...newTracks];
@@ -659,19 +662,24 @@ function setupPlaylistDragReorder() {
   });
 }
 
-async function loadMixConfig() {
+async function loadCurrentTrackMixConfig() {
   try {
-    const config: { pattern: string; duration_secs: number } = await loggedInvoke("get_mix_config");
+    const overrides: { pattern_override: string | null; duration_override: number | null } = await loggedInvoke("get_current_track_mix_overrides");
+    const defaults: { pattern: string; duration_secs: number } = await loggedInvoke("get_mix_config");
+
+    const pattern = overrides.pattern_override || defaults.pattern || "crossfade";
+    const duration = overrides.duration_override ?? defaults.duration_secs ?? 3.0;
+
     const select = document.getElementById("mix-pattern-select") as HTMLSelectElement;
     const slider = document.getElementById("mix-duration-slider") as HTMLInputElement;
     const label = document.getElementById("mix-duration-label")!;
-    if (select) select.value = config.pattern.toLowerCase();
+    if (select) select.value = pattern.toLowerCase();
     if (slider) {
-      slider.value = String(config.duration_secs);
-      label.textContent = `${config.duration_secs.toFixed(1)}s`;
+      slider.value = String(duration);
+      label.textContent = `${duration.toFixed(1)}s`;
     }
   } catch (err) {
-    console.error("Failed to load mix config:", err);
+    console.error("Failed to load track mix config:", err);
   }
 }
 
@@ -1121,6 +1129,7 @@ async function initPlayerEvents() {
     const { track_index } = event.payload;
     selectedTrackIndex = track_index;
     renderPlaylist();
+    loadCurrentTrackMixConfig();
     addLogEntry({
       timestamp: new Date().toISOString(),
       direction: "←",
@@ -1153,12 +1162,6 @@ async function loadAppConfig() {
     if (muteBtn) {
       muteBtn.textContent = config.muted ? "🔇" : "🔊";
     }
-    const mixPattern = document.getElementById("mix-pattern-select") as HTMLSelectElement;
-    const mixDuration = document.getElementById("mix-duration-slider") as HTMLInputElement;
-    const mixDurationLabel = document.getElementById("mix-duration-label");
-    if (mixPattern) mixPattern.value = config.mix_pattern;
-    if (mixDuration) mixDuration.value = String(config.mix_duration_secs);
-    if (mixDurationLabel) mixDurationLabel.textContent = `${config.mix_duration_secs.toFixed(1)}s`;
     logFilterNames = config.log_filter_names;
     logFilterRegex = config.log_filter_regex;
     const filterNamesInput = document.getElementById("settings-log-filter-names") as HTMLInputElement;
@@ -1371,6 +1374,7 @@ async function openSettingsPanel() {
         pattern: mixPattern.value,
         durationSecs: parseFloat(mixDuration.value),
       });
+      await saveAppConfig();
     });
 
     mixDuration.addEventListener("input", async () => {
@@ -1380,6 +1384,10 @@ async function openSettingsPanel() {
         pattern: mixPattern.value,
         durationSecs: val,
       });
+    });
+
+    mixDuration.addEventListener("change", async () => {
+      await saveAppConfig();
     });
 
     // Log filters

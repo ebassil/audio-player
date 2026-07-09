@@ -23,6 +23,8 @@ pub struct PlaylistTrack {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mix_pattern_override: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mix_duration_override: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<TrackMetadata>,
 }
 
@@ -92,6 +94,7 @@ impl Playlist {
                 file_path: trimmed.to_string(),
                 mix_points: None,
                 mix_pattern_override: None,
+                mix_duration_override: None,
                 metadata: None,
             });
         }
@@ -119,6 +122,7 @@ mod tests {
                         mix_in: None,
                     }),
                     mix_pattern_override: None,
+                    mix_duration_override: None,
                     metadata: Some(TrackMetadata {
                         title: Some("Track 1".to_string()),
                         artist: Some("Artist".to_string()),
@@ -130,6 +134,7 @@ mod tests {
                     file_path: "/music/track2.flac".to_string(),
                     mix_points: None,
                     mix_pattern_override: Some("crossfade".to_string()),
+                    mix_duration_override: None,
                     metadata: None,
                 },
             ],
@@ -171,6 +176,28 @@ mod tests {
         let playlist = Playlist::new("Empty".to_string());
         assert!(playlist.tracks.is_empty());
         assert_eq!(playlist.name, "Empty");
+    }
+
+    #[test]
+    fn test_playlist_json_roundtrip_with_duration_override() {
+        let playlist = Playlist {
+            name: "DurationTest".to_string(),
+            tracks: vec![
+                PlaylistTrack {
+                    file_path: "/music/track1.mp3".to_string(),
+                    mix_points: None,
+                    mix_pattern_override: None,
+                    mix_duration_override: Some(7.5),
+                    metadata: None,
+                },
+            ],
+        };
+        let path = std::env::temp_dir().join("test_playlist_dur.json");
+        playlist.save_json(&path).unwrap();
+        let loaded = Playlist::load_json(&path).unwrap();
+        assert_eq!(loaded.tracks.len(), 1);
+        assert_eq!(loaded.tracks[0].mix_duration_override, Some(7.5));
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

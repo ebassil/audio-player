@@ -193,6 +193,7 @@ fn load_playlist(
                 "file_path": t.file_path,
                 "mix_points": t.mix_points,
                 "mix_pattern_override": t.mix_pattern_override,
+                "mix_duration_override": t.mix_duration_override,
                 "metadata": t.metadata,
             })
         })
@@ -221,6 +222,7 @@ fn get_playlist_tracks(state: State<AppState>) -> Result<Vec<serde_json::Value>,
                 "file_path": t.file_path,
                 "mix_points": t.mix_points,
                 "mix_pattern_override": t.mix_pattern_override,
+                "mix_duration_override": t.mix_duration_override,
                 "metadata": t.metadata,
             })
         })
@@ -262,6 +264,7 @@ fn import_m3u8(
                 "file_path": t.file_path,
                 "mix_points": t.mix_points,
                 "mix_pattern_override": t.mix_pattern_override,
+                "mix_duration_override": t.mix_duration_override,
                 "metadata": t.metadata,
             })
         })
@@ -312,7 +315,9 @@ fn set_playlist_context(
             let file_path = e.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let mix_out = e.get("mix_out").and_then(|v| v.as_f64());
             let mix_in = e.get("mix_in").and_then(|v| v.as_f64());
-            PlaylistContextEntry { file_path, mix_out, mix_in }
+            let mix_pattern_override = e.get("mix_pattern_override").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let mix_duration_override = e.get("mix_duration_override").and_then(|v| v.as_f64());
+            PlaylistContextEntry { file_path, mix_out, mix_in, mix_pattern_override, mix_duration_override }
         })
         .collect();
     let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
@@ -511,6 +516,50 @@ fn get_session_toggles(_state: State<AppState>) -> Result<serde_json::Value, Str
     Ok(serde_json::json!({
         "confirm_delete": true,
     }))
+}
+
+// --- Per-track Mix Override IPC Commands ---
+
+#[tauri::command]
+fn get_current_track_mix_overrides(
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
+    let index = pipeline.current_track_index();
+    let playlist = state.playlist.lock().map_err(|e| e.to_string())?;
+    match index.and_then(|i| playlist.tracks.get(i)) {
+        Some(track) => Ok(serde_json::json!({
+            "pattern_override": track.mix_pattern_override,
+            "duration_override": track.mix_duration_override,
+        })),
+        None => Ok(serde_json::json!({
+            "pattern_override": None::<String>,
+            "duration_override": None::<f64>,
+        })),
+    }
+}
+
+#[tauri::command]
+fn set_current_track_mix_overrides(
+    app_handle: tauri::AppHandle,
+    state: State<AppState>,
+    pattern_override: Option<String>,
+    duration_override: Option<f64>,
+) -> Result<String, String> {
+    let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
+    let index = pipeline.current_track_index();
+    let mut playlist = state.playlist.lock().map_err(|e| e.to_string())?;
+    match index.and_then(|i| playlist.tracks.get_mut(i)) {
+        Some(track) => {
+            track.mix_pattern_override = pattern_override.clone();
+            track.mix_duration_override = duration_override;
+            drop(playlist);
+            drop(pipeline);
+            save_playlist_state(&app_handle, &state);
+            Ok(format!("Per-track overrides updated"))
+        }
+        None => Err("No track selected".to_string()),
+    }
 }
 
 // --- Config IPC Commands ---
@@ -738,6 +787,8 @@ pub fn run() {
             load_app_config,
             set_playlist_context,
             set_current_track_index,
+            get_current_track_mix_overrides,
+            set_current_track_mix_overrides,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

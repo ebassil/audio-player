@@ -320,6 +320,7 @@ struct BufferedDecoderShared {
     running: AtomicBool,
     seek_req: Mutex<Option<f64>>,
     total_frames: AtomicU64,
+    consumed_frames: AtomicU64,
     eof: AtomicBool,
 }
 
@@ -336,6 +337,7 @@ impl BufferedDecoder {
             running: AtomicBool::new(true),
             seek_req: Mutex::new(None),
             total_frames: AtomicU64::new(0),
+            consumed_frames: AtomicU64::new(0),
             eof: AtomicBool::new(false),
         });
 
@@ -355,6 +357,7 @@ impl BufferedDecoder {
                             Ordering::Relaxed,
                         );
                         shared.ring_buf.clear();
+                        shared.consumed_frames.store(0, Ordering::Relaxed);
                         shared.eof.store(false, Ordering::Relaxed);
                     }
 
@@ -398,6 +401,12 @@ impl BufferedDecoder {
         let samples_needed = num_frames * self.channels;
         let mut result = vec![0.0; samples_needed];
         let read = self.shared.ring_buf.pop(&mut result);
+        let frames_read = read / self.channels;
+        if frames_read > 0 {
+            self.shared
+                .consumed_frames
+                .fetch_add(frames_read as u64, Ordering::Relaxed);
+        }
         if read < samples_needed {
             // Underrun — pad remaining with silence (already zeroed)
         }
@@ -423,6 +432,14 @@ impl BufferedDecoder {
 
     pub fn position_secs(&self) -> f64 {
         self.shared.total_frames.load(Ordering::Relaxed) as f64 / self.sample_rate as f64
+    }
+
+    /// Playback position based on frames actually consumed from the ring buffer
+    /// by the audio callback. This is the ground-truth position of audio being
+    /// heard, as opposed to `position_secs()` which reflects decode-side position
+    /// (potentially ahead due to buffering).
+    pub fn playback_position_secs(&self) -> f64 {
+        self.shared.consumed_frames.load(Ordering::Relaxed) as f64 / self.sample_rate as f64
     }
 
     pub fn progress(&self) -> f64 {
