@@ -1,8 +1,4 @@
-## Purpose
-
-This spec defines the debug log panel that records and displays IPC communication between the frontend and the Rust audio backend, along with audio processing milestone events from the backend.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Debug log panel
 

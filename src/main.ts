@@ -1178,6 +1178,7 @@ function handleShortcutAction(action: string) {
 async function openSettingsPanel() {
   const container = document.getElementById("plugin-ui-container");
   if (!container) return;
+  logPanelVisible = false;
 
   try {
     const shortcuts: ShortcutBinding[] = await loggedInvoke("get_shortcuts");
