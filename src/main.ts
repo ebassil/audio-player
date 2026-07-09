@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen } from "@tauri-apps/api/event";
 import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
 
@@ -32,16 +33,34 @@ interface PlaylistTrack {
   metadata: { title: string | null; artist: string | null; album: string | null; duration_secs: number | null } | null;
 }
 
+interface LogEntry {
+  timestamp: string;
+  direction: string;
+  name: string;
+  detail: string;
+  status: "success" | "error" | "event";
+}
+
+const MAX_LOG_ENTRIES = 1000;
+const logEntries: LogEntry[] = [];
+
 let currentTracks: PlaylistTrack[] = [];
 let selectedTrackIndex: number | null = null;
 let currentDurationSecs = 0;
+let pluginWindow: WebviewWindow | null = null;
 
 document.addEventListener("DOMContentLoaded", () => {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("view") === "plugins") {
+    renderPluginPopup();
+    return;
+  }
+
   const app = document.getElementById("app")!;
   app.innerHTML = `
     <div class="layout">
       <aside class="sidebar">
-        <div class="sidebar-section">
+        <div class="sidebar-section sidebar-section--playlist">
           <h3>Playlist</h3>
           <div class="playlist-toolbar">
             <button id="btn-load-playlist" title="Load JSON playlist">📂</button>
@@ -53,12 +72,13 @@ document.addEventListener("DOMContentLoaded", () => {
           <ul id="playlist-view" class="playlist"></ul>
           <div id="playlist-info" class="playlist-info">No tracks</div>
         </div>
-        <div class="sidebar-section">
-          <h3>Plugin Rack</h3>
-          <div id="plugin-rack" class="plugin-rack"></div>
-        </div>
+        
       </aside>
       <main class="content">
+          <div id="header-toolbar" class="header-toolbar">
+            <button id="btn-plugins">Plugins</button>
+            <button id="btn-log">Log</button>
+          </div>
           <div id="player-controls" class="player-controls">
             <button id="btn-prev">⏮</button>
             <button id="btn-play">▶</button>
@@ -104,27 +124,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
   volumeSlider.addEventListener("input", async () => {
     const gain = parseInt(volumeSlider.value) / 100;
-    await invoke("set_volume", { gain });
+    await loggedInvoke("set_volume", { gain });
     volumeLabel.textContent = `${Math.round(gain * 100)}%`;
     await saveAppConfig();
   });
 
   muteBtn.addEventListener("click", async () => {
     const muted = muteBtn.textContent === "🔊";
-    await invoke("set_mute", { muted });
+    await loggedInvoke("set_mute", { muted });
     muteBtn.textContent = muted ? "🔇" : "🔊";
     await saveAppConfig();
   });
 
   // Playback controls
   document.getElementById("btn-play")?.addEventListener("click", () => {
-    invoke("play");
+    loggedInvoke("play");
   });
   document.getElementById("btn-pause")?.addEventListener("click", () => {
-    invoke("pause");
+    loggedInvoke("pause");
   });
   document.getElementById("btn-stop")?.addEventListener("click", () => {
-    invoke("stop");
+    loggedInvoke("stop");
   });
   document.getElementById("btn-next")?.addEventListener("click", () => {
     playNextTrack();
@@ -141,7 +161,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const dur = currentDurationSecs || 300;
       const seekPos = pct * dur;
-      await invoke("seek", { positionSecs: seekPos });
+      await loggedInvoke("seek", { positionSecs: seekPos });
     } catch {}
   });
 
@@ -151,7 +171,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const mixDurationLabel = document.getElementById("mix-duration-label")!;
 
   mixPatternSelect.addEventListener("change", async () => {
-    await invoke("set_mix_config", {
+    await loggedInvoke("set_mix_config", {
       pattern: mixPatternSelect.value,
       duration_secs: parseFloat(mixDurationSlider.value),
     });
@@ -161,7 +181,7 @@ document.addEventListener("DOMContentLoaded", () => {
   mixDurationSlider.addEventListener("input", async () => {
     const val = parseFloat(mixDurationSlider.value);
     mixDurationLabel.textContent = `${val.toFixed(1)}s`;
-    await invoke("set_mix_config", {
+    await loggedInvoke("set_mix_config", {
       pattern: mixPatternSelect.value,
       duration_secs: val,
     });
@@ -185,6 +205,10 @@ document.addEventListener("DOMContentLoaded", () => {
   initGlobalShortcuts();
   initPlayerEvents();
   loadAppConfig();
+
+  // Header toolbar buttons
+  document.getElementById("btn-plugins")?.addEventListener("click", openPluginPopup);
+  document.getElementById("btn-log")?.addEventListener("click", toggleLogPanel);
 
   // Add settings button
   const settingsBtn = document.createElement("button");
@@ -233,7 +257,7 @@ async function loadPlaylistJson() {
       filters: [{ name: "Playlist", extensions: ["json"] }],
     });
     if (!selected) return;
-    const tracks: PlaylistTrack[] = await invoke("load_playlist", { path: selected });
+    const tracks: PlaylistTrack[] = await loggedInvoke("load_playlist", { path: selected });
     currentTracks = tracks;
     renderPlaylist();
     await syncPlaylistContext();
@@ -250,7 +274,7 @@ async function savePlaylistJson() {
       defaultPath: "playlist.json",
     });
     if (!selected) return;
-    await invoke("save_playlist", { path: selected });
+    await loggedInvoke("save_playlist", { path: selected });
   } catch (err) {
     console.error("Failed to save playlist:", err);
   }
@@ -264,7 +288,7 @@ async function importM3u8() {
       filters: [{ name: "M3U Playlist", extensions: ["m3u8", "m3u"] }],
     });
     if (!selected) return;
-    const tracks: PlaylistTrack[] = await invoke("import_m3u8", { path: selected });
+    const tracks: PlaylistTrack[] = await loggedInvoke("import_m3u8", { path: selected });
     currentTracks = tracks;
     renderPlaylist();
     await syncPlaylistContext();
@@ -281,7 +305,7 @@ async function exportM3u8() {
       defaultPath: "playlist.m3u8",
     });
     if (!selected) return;
-    await invoke("export_m3u8", { path: selected });
+    await loggedInvoke("export_m3u8", { path: selected });
   } catch (err) {
     console.error("Failed to export M3U8:", err);
   }
@@ -329,7 +353,7 @@ async function loadDirectory() {
       metadata: null,
     }));
     currentTracks = tracks;
-    await invoke("set_playlist_tracks", { tracks: tracks as unknown as Record<string, unknown>[] });
+    await loggedInvoke("set_playlist_tracks", { tracks: tracks as unknown as Record<string, unknown>[] });
     renderPlaylist();
     await syncPlaylistContext();
   } catch (err) {
@@ -338,7 +362,7 @@ async function loadDirectory() {
 }
 
 async function deleteTrackFromPlaylist(index: number) {
-  await invoke("remove_tracks_from_playlist", { indices: [index] });
+  await loggedInvoke("remove_tracks_from_playlist", { indices: [index] });
   currentTracks.splice(index, 1);
   if (selectedTrackIndex === index) selectedTrackIndex = null;
   else if (selectedTrackIndex !== null && selectedTrackIndex > index) selectedTrackIndex--;
@@ -429,8 +453,8 @@ function renderPlaylist() {
 
 async function loadTrack(filePath: string) {
   try {
-    await invoke("load_track", { path: filePath });
-    await invoke("play");
+    await loggedInvoke("load_track", { path: filePath });
+    await loggedInvoke("play");
     await syncTrackIndex();
   } catch (err) {
     console.error("Failed to load track:", err);
@@ -444,7 +468,7 @@ async function syncPlaylistContext() {
       mix_out: t.mix_points?.mix_out ?? null,
       mix_in: t.mix_points?.mix_in ?? null,
     }));
-    await invoke("set_playlist_context", { entries });
+    await loggedInvoke("set_playlist_context", { entries });
   } catch (err) {
     console.error("Failed to sync playlist context:", err);
   }
@@ -452,7 +476,7 @@ async function syncPlaylistContext() {
 
 async function syncTrackIndex() {
   try {
-    await invoke("set_current_track_index", { index: selectedTrackIndex !== null ? selectedTrackIndex : -1 });
+    await loggedInvoke("set_current_track_index", { index: selectedTrackIndex !== null ? selectedTrackIndex : -1 });
   } catch (err) {
     console.error("Failed to sync track index:", err);
   }
@@ -512,7 +536,7 @@ function setupPlaylistDragDrop() {
       metadata: null,
     }));
     currentTracks = [...currentTracks, ...newTracks];
-    await invoke("set_playlist_tracks", { tracks: currentTracks as unknown as Record<string, unknown>[] });
+    await loggedInvoke("set_playlist_tracks", { tracks: currentTracks as unknown as Record<string, unknown>[] });
     renderPlaylist();
     await syncPlaylistContext();
   });
@@ -616,14 +640,14 @@ function setupPlaylistDragReorder() {
       }
     }
 
-    await invoke("set_playlist_tracks", { tracks: currentTracks as unknown as Record<string, unknown>[] });
+    await loggedInvoke("set_playlist_tracks", { tracks: currentTracks as unknown as Record<string, unknown>[] });
     renderPlaylist();
   });
 }
 
 async function loadMixConfig() {
   try {
-    const config: { pattern: string; duration_secs: number } = await invoke("get_mix_config");
+    const config: { pattern: string; duration_secs: number } = await loggedInvoke("get_mix_config");
     const select = document.getElementById("mix-pattern-select") as HTMLSelectElement;
     const slider = document.getElementById("mix-duration-slider") as HTMLInputElement;
     const label = document.getElementById("mix-duration-label")!;
@@ -642,8 +666,8 @@ async function initPluginRack() {
   if (!rack) return;
 
   try {
-    const plugins: PluginInfo[] = await invoke("get_plugins");
-    const nodes: GraphNode[] = await invoke("get_graph_nodes");
+    const plugins: PluginInfo[] = await loggedInvoke("get_plugins");
+    const nodes: GraphNode[] = await loggedInvoke("get_graph_nodes");
 
     rack.innerHTML = "";
 
@@ -677,7 +701,7 @@ async function initPluginRack() {
       const toggle = card.querySelector(".plugin-toggle") as HTMLInputElement;
       toggle?.addEventListener("change", async () => {
         if (node) {
-          await invoke("enable_plugin", { nodeId: node.id, enabled: toggle.checked });
+          await loggedInvoke("enable_plugin", { nodeId: node.id, enabled: toggle.checked });
         }
       });
 
@@ -691,6 +715,55 @@ async function initPluginRack() {
     setupDragReorder(rack);
   } catch (err) {
     rack.innerHTML = `<p class="error">Failed to load plugins: ${err}</p>`;
+  }
+}
+
+function renderPluginPopup() {
+  const app = document.getElementById("app")!;
+  app.innerHTML = `
+    <div class="plugin-popup-layout">
+      <div id="plugin-popup-header" class="plugin-popup-header">
+        <h2>Plugins</h2>
+      </div>
+      <div id="plugin-rack" class="plugin-rack"></div>
+      <div id="plugin-ui-container" class="plugin-ui-container"></div>
+    </div>
+  `;
+  document.title = "Plugins";
+  initPluginRack();
+}
+
+async function openPluginPopup() {
+  if (pluginWindow) {
+    try {
+      await pluginWindow.show();
+      await pluginWindow.setFocus();
+      return;
+    } catch {
+      pluginWindow = null;
+    }
+  }
+
+  try {
+    pluginWindow = new WebviewWindow("plugins", {
+      url: "/?view=plugins",
+      title: "Plugins",
+      width: 800,
+      height: 600,
+      center: true,
+      resizable: true,
+    });
+
+    pluginWindow.once("tauri://error", () => {
+      pluginWindow = null;
+    }).catch(() => {});
+
+    pluginWindow.once("tauri://destroyed", () => {
+      pluginWindow = null;
+    }).catch(() => {});
+  } catch (err) {
+    console.error("Failed to create plugin window:", err);
+    pluginWindow = null;
   }
 }
 
@@ -751,7 +824,7 @@ function setupDragReorder(container: HTMLElement) {
 
     const newOrder = updatedCards.map((_, i) => i);
     try {
-      await invoke("reorder_plugins", { order: newOrder });
+      await loggedInvoke("reorder_plugins", { order: newOrder });
     } catch (err) {
       console.error("Reorder failed:", err);
     }
@@ -763,7 +836,7 @@ async function loadPluginUi(pluginIndex: number) {
   if (!container) return;
 
   try {
-    const html: string = await invoke("get_plugin_ui", { pluginIndex });
+    const html: string = await loggedInvoke("get_plugin_ui", { pluginIndex });
     const iframe = document.createElement("iframe");
     iframe.className = "plugin-iframe";
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
@@ -781,7 +854,7 @@ async function loadPluginUi(pluginIndex: number) {
     // Listen for parameter changes from plugin via postMessage
     window.addEventListener("message", async (event) => {
       if (event.source === iframe.contentWindow && event.data?.type === "param_change") {
-        await invoke("set_plugin_parameter", {
+        await loggedInvoke("set_plugin_parameter", {
           pluginIndex,
           parameter: event.data.name,
           value: event.data.value,
@@ -803,7 +876,7 @@ interface ShortcutBinding {
 
 async function initGlobalShortcuts() {
   try {
-    const shortcuts: ShortcutBinding[] = await invoke("get_shortcuts");
+    const shortcuts: ShortcutBinding[] = await loggedInvoke("get_shortcuts");
     for (const s of shortcuts) {
       const registered = await isRegistered(s.key_combo);
       if (!registered) {
@@ -822,7 +895,7 @@ async function initGlobalShortcuts() {
 async function reinitShortcuts() {
   try {
     // Unregister all, re-register from config
-    const shortcuts: ShortcutBinding[] = await invoke("get_shortcuts");
+    const shortcuts: ShortcutBinding[] = await loggedInvoke("get_shortcuts");
     for (const s of shortcuts) {
       try {
         await unregister(s.key_combo);
@@ -839,6 +912,123 @@ async function reinitShortcuts() {
     }
   } catch (err) {
     console.error("Failed to reinit shortcuts:", err);
+  }
+}
+
+let logPanelVisible = false;
+let lastPlayerStatusLog = 0;
+
+let logAutoScroll = true;
+
+function addLogEntry(entry: LogEntry) {
+  logEntries.push(entry);
+  if (logEntries.length > MAX_LOG_ENTRIES) {
+    logEntries.splice(0, logEntries.length - MAX_LOG_ENTRIES);
+    if (logPanelVisible) {
+      renderLogPanel();
+    }
+    return;
+  }
+  if (logPanelVisible) {
+    const entriesDiv = document.getElementById("log-entries");
+    if (entriesDiv) {
+      entriesDiv.appendChild(createLogEntryElement(entry));
+      if (logAutoScroll) {
+        entriesDiv.scrollTop = entriesDiv.scrollHeight;
+      }
+    }
+  }
+}
+
+async function loggedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const ts = new Date().toISOString();
+  const argsStr = args ? JSON.stringify(args).substring(0, 200) : "";
+  try {
+    const result = await invoke<T>(command, args);
+    addLogEntry({
+      timestamp: ts,
+      direction: "→",
+      name: command,
+      detail: argsStr,
+      status: "success",
+    });
+    return result;
+  } catch (err) {
+    addLogEntry({
+      timestamp: ts,
+      direction: "→",
+      name: command,
+      detail: `${argsStr} → ${err}`,
+      status: "error",
+    });
+    throw err;
+  }
+}
+
+function createLogEntryElement(entry: LogEntry): HTMLElement {
+  const div = document.createElement("div");
+  div.className = `log-entry log-${entry.status}`;
+  div.innerHTML = `
+    <span class="log-time">${entry.timestamp.slice(11, 23)}</span>
+    <span class="log-dir">${entry.direction}</span>
+    <span class="log-name">${entry.name}</span>
+    <span class="log-detail">${escapeHtml(entry.detail)}</span>
+  `;
+  return div;
+}
+
+function renderLogPanel() {
+  const container = document.getElementById("plugin-ui-container");
+  if (!container) return;
+  container.innerHTML = `
+    <div class="log-panel" id="log-panel">
+      <div class="log-panel-header">
+        <span>Debug Log</span>
+        <button id="btn-log-clear" class="log-btn-small">Clear</button>
+      </div>
+      <div class="log-entries" id="log-entries">
+        ${logEntries.map(e => `
+          <div class="log-entry log-${e.status}">
+            <span class="log-time">${e.timestamp.slice(11, 23)}</span>
+            <span class="log-dir">${e.direction}</span>
+            <span class="log-name">${e.name}</span>
+            <span class="log-detail">${escapeHtml(e.detail)}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+
+  document.getElementById("btn-log-clear")?.addEventListener("click", () => {
+    logEntries.length = 0;
+    renderLogPanel();
+  });
+
+  const entriesDiv = document.getElementById("log-entries");
+  if (entriesDiv) {
+    entriesDiv.scrollTop = entriesDiv.scrollHeight;
+    logAutoScroll = true;
+    entriesDiv.addEventListener("scroll", () => {
+      const { scrollTop, scrollHeight, clientHeight } = entriesDiv;
+      logAutoScroll = scrollHeight - scrollTop - clientHeight < 1;
+    });
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function toggleLogPanel() {
+  logPanelVisible = !logPanelVisible;
+  const container = document.getElementById("plugin-ui-container");
+  if (!container) return;
+  if (logPanelVisible) {
+    container.style.display = "block";
+    renderLogPanel();
+  } else {
+    container.innerHTML = `<p class="hint">Toggle Log to see debug output</p>`;
+    container.style.display = "block";
   }
 }
 
@@ -861,19 +1051,48 @@ async function initPlayerEvents() {
     if (progressBar) {
       progressBar.style.width = `${status.progress * 100}%`;
     }
+
+    const now = Date.now();
+    if (now - lastPlayerStatusLog >= 1000) {
+      lastPlayerStatusLog = now;
+      addLogEntry({
+        timestamp: new Date().toISOString(),
+        direction: "←",
+        name: "player-status",
+        detail: `state=${status.state} vol=${Math.round(status.volume * 100)}% pos=${Math.round(status.position_secs)}s`,
+        status: "event",
+      });
+    }
   });
 
   await listen<{ track_index: number }>("track-changed", (event) => {
     const { track_index } = event.payload;
     selectedTrackIndex = track_index;
     renderPlaylist();
+    addLogEntry({
+      timestamp: new Date().toISOString(),
+      direction: "←",
+      name: "track-changed",
+      detail: `track_index=${track_index}`,
+      status: "event",
+    });
+  });
+
+  await listen<{ timestamp: string; message: string }>("audio-log", (event) => {
+    addLogEntry({
+      timestamp: event.payload.timestamp,
+      direction: "←",
+      name: "audio-log",
+      detail: event.payload.message,
+      status: "event",
+    });
   });
 }
 
 async function loadAppConfig() {
   try {
     const config: { mix_pattern: string; mix_duration_secs: number; volume: number; muted: boolean } =
-      await invoke("load_app_config");
+      await loggedInvoke("load_app_config");
     const volumeSlider = document.getElementById("volume-slider") as HTMLInputElement;
     const muteBtn = document.getElementById("btn-mute");
     if (volumeSlider) {
@@ -895,7 +1114,7 @@ async function loadAppConfig() {
 
 async function saveAppConfig() {
   try {
-    await invoke("save_app_config");
+    await loggedInvoke("save_app_config");
   } catch (err) {
     console.error("Failed to save app config:", err);
   }
@@ -904,7 +1123,7 @@ async function saveAppConfig() {
 function handleShortcutAction(action: string) {
   switch (action) {
     case "PlayPause":
-      invoke("play");
+      loggedInvoke("play");
       break;
     case "NextTrack":
       playNextTrack();
@@ -961,7 +1180,7 @@ async function openSettingsPanel() {
   if (!container) return;
 
   try {
-    const shortcuts: ShortcutBinding[] = await invoke("get_shortcuts");
+    const shortcuts: ShortcutBinding[] = await loggedInvoke("get_shortcuts");
 
     container.innerHTML = `
       <div class="settings-panel">
@@ -1030,7 +1249,7 @@ async function openSettingsPanel() {
           document.removeEventListener("keydown", handler);
 
           try {
-            await invoke("set_shortcut", { action, keyCombo: combo });
+            await loggedInvoke("set_shortcut", { action, keyCombo: combo });
             keySpan.textContent = combo;
             (keySpan as HTMLElement).dataset.key = combo;
             (keySpan as HTMLElement).style.color = "";
@@ -1050,13 +1269,13 @@ async function openSettingsPanel() {
     });
 
     document.getElementById("btn-reset-shortcuts")?.addEventListener("click", async () => {
-      await invoke("reset_shortcuts");
+      await loggedInvoke("reset_shortcuts");
       await openSettingsPanel();
       await reinitShortcuts();
     });
 
     document.getElementById("btn-save-shortcuts")?.addEventListener("click", async () => {
-      await invoke("save_shortcuts");
+      await loggedInvoke("save_shortcuts");
     });
 
     // Mix defaults sync
@@ -1065,14 +1284,14 @@ async function openSettingsPanel() {
     const mixDurationLabel = document.getElementById("settings-mix-duration-label")!;
 
     try {
-      const mixConfig: { pattern: string; duration_secs: number } = await invoke("get_mix_config");
+      const mixConfig: { pattern: string; duration_secs: number } = await loggedInvoke("get_mix_config");
       mixPattern.value = mixConfig.pattern.toLowerCase();
       mixDuration.value = String(mixConfig.duration_secs);
       mixDurationLabel.textContent = `${mixConfig.duration_secs.toFixed(1)}s`;
     } catch {}
 
     mixPattern.addEventListener("change", async () => {
-      await invoke("set_mix_config", {
+      await loggedInvoke("set_mix_config", {
         pattern: mixPattern.value,
         duration_secs: parseFloat(mixDuration.value),
       });
@@ -1081,7 +1300,7 @@ async function openSettingsPanel() {
     mixDuration.addEventListener("input", async () => {
       const val = parseFloat(mixDuration.value);
       mixDurationLabel.textContent = `${val.toFixed(1)}s`;
-      await invoke("set_mix_config", {
+      await loggedInvoke("set_mix_config", {
         pattern: mixPattern.value,
         duration_secs: val,
       });

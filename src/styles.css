@@ -15,11 +15,12 @@
 
 .layout {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .sidebar {
   width: 300px;
+  flex-shrink: 0;
   background: #fff;
   border-right: 1px solid #ddd;
   display: flex;
@@ -41,8 +42,10 @@
 
 .content {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .player-controls {
@@ -214,6 +217,7 @@
   margin: 16px;
   border-radius: 4px;
   border: 1px solid #ddd;
+  overflow: hidden;
 }
 
 .plugin-iframe {
@@ -437,4 +441,148 @@ body.drag-over {
 
 #btn-settings:hover {
   background: #eee;
+}
+
+.sidebar-section:last-child {
+  border-bottom: none;
+}
+
+.sidebar-section--playlist {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-section--playlist .playlist {
+  flex: 1;
+  max-height: none;
+}
+
+.header-toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 16px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+}
+
+.header-toolbar button {
+  padding: 4px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.header-toolbar button:hover {
+  background: #eee;
+}
+
+.log-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.log-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.log-btn-small {
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.log-btn-small:hover {
+  background: #eee;
+}
+
+.log-entries {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.log-entry {
+  display: flex;
+  gap: 6px;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
+.log-entry:hover {
+  background: #f9f9f9;
+}
+
+.log-time {
+  color: #999;
+  flex-shrink: 0;
+  width: 80px;
+}
+
+.log-dir {
+  color: #666;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.log-name {
+  color: #555;
+  flex-shrink: 0;
+  font-weight: 600;
+  min-width: 100px;
+}
+
+.log-detail {
+  color: #777;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-success .log-name {
+  color: #27ae60;
+}
+
+.log-error .log-name {
+  color: #d32f2f;
+}
+
+.log-event .log-name {
+  color: #2980b9;
+}
+
+.plugin-popup-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px;
+}
+
+.plugin-popup-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.plugin-popup-header h2 {
+  font-size: 16px;
+  color: #333;
 }

@@ -12,6 +12,17 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 
+fn emit_audio_log(app_handle: &tauri::AppHandle, message: String) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let _ = app_handle.emit("audio-log", serde_json::json!({
+        "timestamp": ts,
+        "message": message,
+    }));
+}
+
 /// Application state shared across Tauri commands.
 pub struct AppState {
     pub pipeline: Mutex<AudioPipeline>,
@@ -21,7 +32,7 @@ pub struct AppState {
 }
 
 #[tauri::command]
-fn load_track(state: State<AppState>, path: String) -> Result<String, String> {
+fn load_track(app_handle: tauri::AppHandle, state: State<AppState>, path: String) -> Result<String, String> {
     let path_buf = PathBuf::from(&path);
     let metadata = state
         .pipeline
@@ -29,6 +40,7 @@ fn load_track(state: State<AppState>, path: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .load_track(&path_buf)
         .map_err(|e| e.to_string())?;
+    emit_audio_log(&app_handle, format!("Track loaded: {}", path_buf.file_name().unwrap_or_default().to_string_lossy()));
     Ok(format!(
         "Loaded: {} ({} channels, {} Hz, {:.1}s)",
         path_buf.file_name().unwrap_or_default().to_string_lossy(),
@@ -39,8 +51,9 @@ fn load_track(state: State<AppState>, path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn play(state: State<AppState>) -> Result<String, String> {
+fn play(app_handle: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     state.pipeline.lock().map_err(|e| e.to_string())?.play()?;
+    emit_audio_log(&app_handle, "Decode started / Play".to_string());
     Ok("Playing".to_string())
 }
 
@@ -57,18 +70,20 @@ fn resume(state: State<AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn stop(state: State<AppState>) -> Result<String, String> {
+fn stop(app_handle: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     state.pipeline.lock().map_err(|e| e.to_string())?.stop();
+    emit_audio_log(&app_handle, "Decode completed / Stop".to_string());
     Ok("Stopped".to_string())
 }
 
 #[tauri::command]
-fn seek(state: State<AppState>, position_secs: f64) -> Result<String, String> {
+fn seek(app_handle: tauri::AppHandle, state: State<AppState>, position_secs: f64) -> Result<String, String> {
     state
         .pipeline
         .lock()
         .map_err(|e| e.to_string())?
         .seek(position_secs);
+    emit_audio_log(&app_handle, format!("Seek performed to {:.1}s", position_secs));
     Ok(format!("Seeked to {:.1}s", position_secs))
 }
 
@@ -578,12 +593,14 @@ pub fn run() {
             let handle = app.handle().clone();
 
             std::thread::spawn(move || {
+                let mut prev_state = String::new();
                 loop {
                     std::thread::sleep(Duration::from_millis(250));
                     if let Some(state) = handle.try_state::<AppState>() {
                         if let Ok(pipeline) = state.pipeline.lock() {
+                            let current_state = format!("{:?}", pipeline.state());
                             let status = serde_json::json!({
-                                "state": format!("{:?}", pipeline.state()),
+                                "state": current_state,
                                 "volume": pipeline.volume().raw_gain(),
                                 "muted": pipeline.volume().is_muted(),
                                 "progress": pipeline.progress(),
@@ -591,6 +608,11 @@ pub fn run() {
                                 "duration_secs": pipeline.duration_secs(),
                             });
                             let _ = handle.emit("player-status", status);
+
+                            if current_state != prev_state && !prev_state.is_empty() {
+                                emit_audio_log(&handle, format!("State changed: {} → {}", prev_state, current_state));
+                            }
+                            prev_state = current_state;
 
                             // Emit track-changed event if pending
                             if let Some(new_index) = pipeline.take_pending_track_change() {
