@@ -271,6 +271,39 @@ fn remove_tracks_from_playlist(
     Ok(format!("Removed {} track(s)", indices.len()))
 }
 
+// --- Playlist Context IPC Commands ---
+
+#[tauri::command]
+fn set_playlist_context(
+    state: State<AppState>,
+    entries: Vec<serde_json::Value>,
+) -> Result<String, String> {
+    use audio::pipeline::PlaylistContextEntry;
+    let parsed: Vec<PlaylistContextEntry> = entries
+        .iter()
+        .map(|e| {
+            let file_path = e.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mix_out = e.get("mix_out").and_then(|v| v.as_f64());
+            let mix_in = e.get("mix_in").and_then(|v| v.as_f64());
+            PlaylistContextEntry { file_path, mix_out, mix_in }
+        })
+        .collect();
+    let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
+    pipeline.set_playlist_context(parsed);
+    Ok("Playlist context updated".to_string())
+}
+
+#[tauri::command]
+fn set_current_track_index(
+    state: State<AppState>,
+    index: i32,
+) -> Result<String, String> {
+    let idx = if index < 0 { None } else { Some(index as usize) };
+    let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
+    pipeline.set_current_track_index(idx);
+    Ok(format!("Current track index set to {:?}", idx))
+}
+
 // --- Plugin IPC Commands ---
 
 #[tauri::command]
@@ -558,6 +591,13 @@ pub fn run() {
                                 "duration_secs": pipeline.duration_secs(),
                             });
                             let _ = handle.emit("player-status", status);
+
+                            // Emit track-changed event if pending
+                            if let Some(new_index) = pipeline.take_pending_track_change() {
+                                let _ = handle.emit("track-changed", serde_json::json!({
+                                    "track_index": new_index,
+                                }));
+                            }
                         }
                     }
                 }
@@ -602,6 +642,8 @@ pub fn run() {
             get_config_dir,
             save_app_config,
             load_app_config,
+            set_playlist_context,
+            set_current_track_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

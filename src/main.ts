@@ -236,6 +236,7 @@ async function loadPlaylistJson() {
     const tracks: PlaylistTrack[] = await invoke("load_playlist", { path: selected });
     currentTracks = tracks;
     renderPlaylist();
+    await syncPlaylistContext();
   } catch (err) {
     console.error("Failed to load playlist:", err);
   }
@@ -266,6 +267,7 @@ async function importM3u8() {
     const tracks: PlaylistTrack[] = await invoke("import_m3u8", { path: selected });
     currentTracks = tracks;
     renderPlaylist();
+    await syncPlaylistContext();
   } catch (err) {
     console.error("Failed to import M3U8:", err);
   }
@@ -329,6 +331,7 @@ async function loadDirectory() {
     currentTracks = tracks;
     await invoke("set_playlist_tracks", { tracks: tracks as unknown as Record<string, unknown>[] });
     renderPlaylist();
+    await syncPlaylistContext();
   } catch (err) {
     console.error("Failed to load directory:", err);
   }
@@ -428,8 +431,30 @@ async function loadTrack(filePath: string) {
   try {
     await invoke("load_track", { path: filePath });
     await invoke("play");
+    await syncTrackIndex();
   } catch (err) {
     console.error("Failed to load track:", err);
+  }
+}
+
+async function syncPlaylistContext() {
+  try {
+    const entries = currentTracks.map((t) => ({
+      file_path: t.file_path,
+      mix_out: t.mix_points?.mix_out ?? null,
+      mix_in: t.mix_points?.mix_in ?? null,
+    }));
+    await invoke("set_playlist_context", { entries });
+  } catch (err) {
+    console.error("Failed to sync playlist context:", err);
+  }
+}
+
+async function syncTrackIndex() {
+  try {
+    await invoke("set_current_track_index", { index: selectedTrackIndex !== null ? selectedTrackIndex : -1 });
+  } catch (err) {
+    console.error("Failed to sync track index:", err);
   }
 }
 
@@ -489,6 +514,7 @@ function setupPlaylistDragDrop() {
     currentTracks = [...currentTracks, ...newTracks];
     await invoke("set_playlist_tracks", { tracks: currentTracks as unknown as Record<string, unknown>[] });
     renderPlaylist();
+    await syncPlaylistContext();
   });
 }
 
@@ -836,6 +862,12 @@ async function initPlayerEvents() {
       progressBar.style.width = `${status.progress * 100}%`;
     }
   });
+
+  await listen<{ track_index: number }>("track-changed", (event) => {
+    const { track_index } = event.payload;
+    selectedTrackIndex = track_index;
+    renderPlaylist();
+  });
 }
 
 async function loadAppConfig() {
@@ -875,8 +907,10 @@ function handleShortcutAction(action: string) {
       invoke("play");
       break;
     case "NextTrack":
+      playNextTrack();
       break;
     case "PreviousTrack":
+      playPrevTrack();
       break;
     case "Delete":
       if (selectedTrackIndex !== null) deleteTrackFromPlaylist(selectedTrackIndex);

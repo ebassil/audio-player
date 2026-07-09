@@ -1,5 +1,9 @@
 use std::fs::File;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Channels, Signal};
 use symphonia::core::codecs::{Decoder, CODEC_TYPE_NULL};
@@ -8,6 +12,8 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
+
+use crate::audio::ringbuf::AudioRingBuf;
 
 /// Errors that can occur during decoding.
 #[derive(Debug, thiserror::Error)]
@@ -281,6 +287,162 @@ impl StreamingDecoder {
                     }
                 }
             }
+        }
+    }
+}
+
+// --- Constants for the buffered decoder ---
+
+/// Capacity of the ring buffer in samples (power of 2, ~6s at 44.1kHz stereo).
+const RING_BUF_CAPACITY: usize = 524288;
+
+/// Number of frames to decode per batch in the background thread.
+const DECODE_BATCH_FRAMES: usize = 8192;
+
+/// How long to sleep when the ring buffer is full.
+const SLEEP_DURATION_MS: u64 = 10;
+
+/// A streaming decoder wrapped with a background decode thread and a lock-free ring buffer.
+///
+/// The audio callback calls `read()` which pops samples from the ring buffer — this is
+/// lock-free and never blocks on I/O or CPU-intensive decoding. A dedicated background
+/// thread continuously decodes audio data via Symphonia and pushes it into the ring buffer.
+pub struct BufferedDecoder {
+    shared: Arc<BufferedDecoderShared>,
+    handle: Option<thread::JoinHandle<()>>,
+    sample_rate: u32,
+    channels: usize,
+    duration_secs: f64,
+}
+
+struct BufferedDecoderShared {
+    ring_buf: AudioRingBuf,
+    running: AtomicBool,
+    seek_req: Mutex<Option<f64>>,
+    total_frames: AtomicU64,
+    eof: AtomicBool,
+}
+
+impl BufferedDecoder {
+    /// Open an audio file and start decoding immediately in a background thread.
+    pub fn new(path: &Path) -> Result<Self, DecodeError> {
+        let decoder = StreamingDecoder::new(path)?;
+        let sample_rate = decoder.sample_rate();
+        let channels = decoder.channels();
+        let duration_secs = decoder.duration_secs();
+
+        let shared = Arc::new(BufferedDecoderShared {
+            ring_buf: AudioRingBuf::new(RING_BUF_CAPACITY),
+            running: AtomicBool::new(true),
+            seek_req: Mutex::new(None),
+            total_frames: AtomicU64::new(0),
+            eof: AtomicBool::new(false),
+        });
+
+        let shared_clone = Arc::clone(&shared);
+        let handle = thread::Builder::new()
+            .name("audio-decode".into())
+            .spawn(move || {
+                let shared = shared_clone;
+                let mut decoder = decoder;
+
+                while shared.running.load(Ordering::Relaxed) {
+                    // Handle seek requests
+                    if let Some(pos) = shared.seek_req.lock().unwrap().take() {
+                        decoder.seek(pos);
+                        shared.total_frames.store(
+                            (pos * decoder.sample_rate() as f64) as u64,
+                            Ordering::Relaxed,
+                        );
+                        shared.ring_buf.clear();
+                        shared.eof.store(false, Ordering::Relaxed);
+                    }
+
+                    // If ring buffer has room, decode a batch
+                    let batch_samples = DECODE_BATCH_FRAMES * decoder.channels();
+                    if shared.ring_buf.writable() >= batch_samples {
+                        let samples = decoder.read(DECODE_BATCH_FRAMES);
+                        let pushed = shared.ring_buf.push(&samples);
+
+                        let decoded_frames = pushed / decoder.channels();
+                        shared
+                            .total_frames
+                            .fetch_add(decoded_frames as u64, Ordering::Relaxed);
+
+                        if decoder.is_eof() && pushed == 0 {
+                            shared.eof.store(true, Ordering::Relaxed);
+                            thread::sleep(Duration::from_millis(SLEEP_DURATION_MS));
+                        }
+                    } else {
+                        thread::sleep(Duration::from_millis(SLEEP_DURATION_MS));
+                    }
+                }
+            })
+            .map_err(|e| DecodeError::DecodeFailed(e.to_string()))?;
+
+        Ok(Self {
+            shared,
+            handle: Some(handle),
+            sample_rate,
+            channels,
+            duration_secs,
+        })
+    }
+
+    /// Read up to `num_frames` of interleaved f32 samples from the ring buffer.
+    /// Returns exactly `num_frames * channels` samples, padding with silence on underrun.
+    ///
+    /// This is lock-free (atomic operations only) and suitable for use in a real-time
+    /// audio callback.
+    pub fn read(&self, num_frames: usize) -> Vec<f32> {
+        let samples_needed = num_frames * self.channels;
+        let mut result = vec![0.0; samples_needed];
+        let read = self.shared.ring_buf.pop(&mut result);
+        if read < samples_needed {
+            // Underrun — pad remaining with silence (already zeroed)
+        }
+        result
+    }
+
+    /// Send a seek request. The actual seek happens on the decode thread asynchronously.
+    pub fn seek(&self, position_secs: f64) {
+        *self.shared.seek_req.lock().unwrap() = Some(position_secs);
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    pub fn duration_secs(&self) -> f64 {
+        self.duration_secs
+    }
+
+    pub fn position_secs(&self) -> f64 {
+        self.shared.total_frames.load(Ordering::Relaxed) as f64 / self.sample_rate as f64
+    }
+
+    pub fn progress(&self) -> f64 {
+        if self.duration_secs <= 0.0 {
+            return 0.0;
+        }
+        (self.position_secs() / self.duration_secs).clamp(0.0, 1.0)
+    }
+
+    pub fn is_eof(&self) -> bool {
+        self.shared.eof.load(Ordering::Relaxed)
+            && self.shared.ring_buf.readable() == 0
+    }
+}
+
+impl Drop for BufferedDecoder {
+    fn drop(&mut self) {
+        self.shared.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            handle.join().ok();
         }
     }
 }

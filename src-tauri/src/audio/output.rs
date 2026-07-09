@@ -170,10 +170,11 @@ impl AudioOutput {
             .as_ref()
             .ok_or_else(|| "No output device selected".to_string())?;
 
-        let config: StreamConfig = device
+        let stream_config: StreamConfig = device
             .default_output_config()
             .map_err(|e| e.to_string())?
             .into();
+        self.config.sample_rate = stream_config.sample_rate.0;
 
         let callback = self
             .callback
@@ -187,11 +188,11 @@ impl AudioOutput {
             device_changed.store(true, Ordering::SeqCst);
         };
 
-        let channels = config.channels as usize;
+        let channels = stream_config.channels as usize;
 
         let stream = device
             .build_output_stream(
-                &config,
+                &stream_config,
                 move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
                     let num_frames = data.len() / channels;
                     let samples = {

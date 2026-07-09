@@ -8,6 +8,7 @@ pub mod output;
 pub mod playlist;
 pub mod pipeline;
 pub mod player;
+pub mod ringbuf;
 pub mod plugin_adapter;
 pub mod plugin_host;
 pub mod plugin_manifest;
