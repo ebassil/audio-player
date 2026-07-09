@@ -848,6 +848,8 @@ function setupDragReorder(container: HTMLElement) {
 async function loadPluginUi(pluginIndex: number) {
   const container = document.getElementById("plugin-ui-container");
   if (!container) return;
+  logPanelVisible = false;
+  document.getElementById("btn-log")?.classList.remove("active");
 
   try {
     const html: string = await loggedInvoke("get_plugin_ui", { pluginIndex });
@@ -1064,13 +1066,14 @@ function updateLogFilters() {
 function toggleLogPanel() {
   logPanelVisible = !logPanelVisible;
   const container = document.getElementById("plugin-ui-container");
+  const btn = document.getElementById("btn-log");
   if (!container) return;
   if (logPanelVisible) {
-    container.style.display = "block";
+    btn?.classList.add("active");
     renderLogPanel();
   } else {
+    btn?.classList.remove("active");
     container.innerHTML = `<p class="hint">Toggle Log to see debug output</p>`;
-    container.style.display = "block";
   }
 }
 
@@ -1221,6 +1224,7 @@ async function openSettingsPanel() {
   const container = document.getElementById("plugin-ui-container");
   if (!container) return;
   logPanelVisible = false;
+  document.getElementById("btn-log")?.classList.remove("active");
 
   try {
     const shortcuts: ShortcutBinding[] = await loggedInvoke("get_shortcuts");
