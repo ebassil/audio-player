@@ -50,6 +50,19 @@ let selectedTrackIndex: number | null = null;
 let currentDurationSecs = 0;
 let pluginWindow: WebviewWindow | null = null;
 
+function formatTime(secs: number): string {
+  const s = Math.max(0, Math.round(secs));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = `${m}`.padStart(2, "0");
+  const ss = `${sec}`.padStart(2, "0");
+  if (h > 0) {
+    return `${h}:${mm}:${ss}`;
+  }
+  return `${m}:${ss}`;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const params = new URLSearchParams(window.location.search);
   if (params.get("view") === "plugins") {
@@ -92,10 +105,16 @@ document.addEventListener("DOMContentLoaded", () => {
             <span id="status-text">Stopped</span>
           </div>
         <div class="timeline-container">
-          <div id="timeline" class="timeline">
-            <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
-            <div id="mix-out-marker" class="mix-marker mix-out" title="Mix-Out Point" style="display: none"></div>
-            <div id="mix-in-marker" class="mix-marker mix-in" title="Mix-In Point" style="display: none"></div>
+          <div class="timeline-row">
+            <span id="position-label" class="time-label time-label--position"></span>
+            <div id="timeline" class="timeline">
+              <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+              <span id="duration-label-fill" class="time-label time-label--duration"></span>
+              <span id="duration-label-bg" class="time-label time-label--duration"></span>
+              <div id="mix-out-marker" class="mix-marker mix-out" title="Mix-Out Point" style="display: none"></div>
+              <div id="mix-in-marker" class="mix-marker mix-in" title="Mix-In Point" style="display: none"></div>
+            </div>
+            <span id="remaining-label" class="time-label time-label--remaining"></span>
           </div>
           <div class="mix-controls">
             <span class="mix-label">Mix:</span>
@@ -1110,6 +1129,28 @@ async function initPlayerEvents() {
     const progressBar = document.getElementById("progress-bar");
     if (progressBar) {
       progressBar.style.width = `${status.progress * 100}%`;
+    }
+
+    const posLabel = document.getElementById("position-label");
+    const remainingLabel = document.getElementById("remaining-label");
+    const durLabelFill = document.getElementById("duration-label-fill");
+    const durLabelBg = document.getElementById("duration-label-bg");
+    if (posLabel) {
+      posLabel.textContent = formatTime(status.position_secs);
+    }
+    const remaining = Math.max(0, status.duration_secs - status.position_secs);
+    if (remainingLabel) {
+      remainingLabel.textContent = formatTime(remaining);
+    }
+    const durStr = formatTime(status.duration_secs);
+    const pct = status.progress;
+    if (durLabelFill) {
+      durLabelFill.textContent = durStr;
+      durLabelFill.style.clipPath = `inset(0 ${(1 - pct) * 100}% 0 0)`;
+    }
+    if (durLabelBg) {
+      durLabelBg.textContent = durStr;
+      durLabelBg.style.clipPath = `inset(0 0 0 ${pct * 100}%)`;
     }
 
     const now = Date.now();

@@ -74,6 +74,53 @@
   width: 120px;
 }
 
+.timeline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.timeline-row .timeline {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.time-label {
+  font-size: 12px;
+  font-family: monospace;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.time-label--position {
+  text-align: left;
+}
+
+.time-label--remaining {
+  text-align: right;
+}
+
+.time-label--duration {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  transform: translateY(-50%);
+  text-align: center;
+  pointer-events: none;
+  font-size: 11px;
+  z-index: 5;
+}
+
+#duration-label-fill {
+  color: #fff;
+}
+
+#duration-label-bg {
+  color: #000;
+}
+
 .timeline-container {
   padding: 8px 16px;
   background: #fff;
@@ -82,7 +129,7 @@
 
 .timeline {
   position: relative;
-  height: 8px;
+  height: 20px;
   background: #ddd;
   cursor: pointer;
   margin-bottom: 8px;
@@ -96,9 +143,9 @@
 
 .mix-marker {
   position: absolute;
-  top: -4px;
+  top: -2px;
   width: 2px;
-  height: 16px;
+  height: 24px;
   cursor: ew-resize;
   z-index: 10;
 }
