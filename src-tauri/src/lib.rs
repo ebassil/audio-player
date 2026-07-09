@@ -13,12 +13,7 @@ use tauri::Manager;
 use tauri::State;
 
 fn emit_audio_log(app_handle: &tauri::AppHandle, message: String) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
     let _ = app_handle.emit("audio-log", serde_json::json!({
-        "timestamp": ts,
         "message": message,
     }));
 }
@@ -528,7 +523,12 @@ fn get_config_dir(app_handle: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn save_app_config(app_handle: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
+fn save_app_config(
+    app_handle: tauri::AppHandle,
+    state: State<AppState>,
+    log_filter_names: Option<String>,
+    log_filter_regex: Option<String>,
+) -> Result<String, String> {
     let pipeline = state.pipeline.lock().map_err(|e| e.to_string())?;
     let mix = pipeline.mix_engine();
     let mix_config = mix.lock().map_err(|e| e.to_string())?.config().clone();
@@ -538,6 +538,8 @@ fn save_app_config(app_handle: tauri::AppHandle, state: State<AppState>) -> Resu
     let app_config = audio::config::AppConfig {
         volume: volume.raw_gain(),
         muted: volume.is_muted(),
+        log_filter_names: log_filter_names.unwrap_or_default(),
+        log_filter_regex: log_filter_regex.unwrap_or_default(),
         ..app_config
     };
 
@@ -567,6 +569,8 @@ fn load_app_config(app_handle: tauri::AppHandle, state: State<AppState>) -> Resu
         "mix_duration_secs": config.mix_duration_secs,
         "volume": config.volume,
         "muted": config.muted,
+        "log_filter_names": config.log_filter_names,
+        "log_filter_regex": config.log_filter_regex,
     }))
 }
 

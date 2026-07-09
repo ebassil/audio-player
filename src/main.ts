@@ -940,6 +940,9 @@ let logFilterRegex = "";
 let logFilterRegexObj: RegExp | null = null;
 
 function addLogEntry(entry: LogEntry) {
+  if (typeof entry.timestamp === "number") {
+    entry.timestamp = new Date(entry.timestamp * 1000).toISOString();
+  }
   logEntries.push(entry);
   if (logEntries.length > MAX_LOG_ENTRIES) {
     logEntries.splice(0, logEntries.length - MAX_LOG_ENTRIES);
@@ -985,12 +988,16 @@ async function loggedInvoke<T>(command: string, args?: Record<string, unknown>):
   }
 }
 
+function formatLogTime(ts: string): string {
+  return ts.slice(11, 23);
+}
+
 function createLogEntryElement(entry: LogEntry): HTMLElement | null {
   if (shouldFilterEntry(entry)) return null;
   const div = document.createElement("div");
   div.className = `log-entry log-${entry.status}`;
   div.innerHTML = `
-    <span class="log-time">${entry.timestamp.slice(11, 23)}</span>
+    <span class="log-time">${formatLogTime(entry.timestamp)}</span>
     <span class="log-dir">${entry.direction}</span>
     <span class="log-name">${entry.name}</span>
     <span class="log-detail">${escapeHtml(entry.detail)}</span>
@@ -1010,7 +1017,7 @@ function renderLogPanel() {
       <div class="log-entries" id="log-entries">
         ${logEntries.filter(e => !shouldFilterEntry(e)).map(e => `
           <div class="log-entry log-${e.status}">
-            <span class="log-time">${e.timestamp.slice(11, 23)}</span>
+            <span class="log-time">${formatLogTime(e.timestamp)}</span>
             <span class="log-dir">${e.direction}</span>
             <span class="log-name">${e.name}</span>
             <span class="log-detail">${escapeHtml(e.detail)}</span>
@@ -1123,9 +1130,9 @@ async function initPlayerEvents() {
     });
   });
 
-  await listen<{ timestamp: string; message: string }>("audio-log", (event) => {
+  await listen<{ message: string }>("audio-log", (event) => {
     addLogEntry({
-      timestamp: event.payload.timestamp,
+      timestamp: new Date().toISOString(),
       direction: "←",
       name: "audio-log",
       detail: event.payload.message,
@@ -1136,7 +1143,7 @@ async function initPlayerEvents() {
 
 async function loadAppConfig() {
   try {
-    const config: { mix_pattern: string; mix_duration_secs: number; volume: number; muted: boolean } =
+    const config: { mix_pattern: string; mix_duration_secs: number; volume: number; muted: boolean; log_filter_names: string; log_filter_regex: string } =
       await loggedInvoke("load_app_config");
     const volumeSlider = document.getElementById("volume-slider") as HTMLInputElement;
     const muteBtn = document.getElementById("btn-mute");
@@ -1152,6 +1159,13 @@ async function loadAppConfig() {
     if (mixPattern) mixPattern.value = config.mix_pattern;
     if (mixDuration) mixDuration.value = String(config.mix_duration_secs);
     if (mixDurationLabel) mixDurationLabel.textContent = `${config.mix_duration_secs.toFixed(1)}s`;
+    logFilterNames = config.log_filter_names;
+    logFilterRegex = config.log_filter_regex;
+    const filterNamesInput = document.getElementById("settings-log-filter-names") as HTMLInputElement;
+    const filterRegexInput = document.getElementById("settings-log-filter-regex") as HTMLInputElement;
+    if (filterNamesInput) filterNamesInput.value = logFilterNames;
+    if (filterRegexInput) filterRegexInput.value = logFilterRegex;
+    updateLogFilters();
   } catch (err) {
     console.error("Failed to load app config:", err);
   }
@@ -1159,7 +1173,10 @@ async function loadAppConfig() {
 
 async function saveAppConfig() {
   try {
-    await loggedInvoke("save_app_config");
+    await loggedInvoke("save_app_config", {
+      logFilterNames: logFilterNames,
+      logFilterRegex: logFilterRegex,
+    });
   } catch (err) {
     console.error("Failed to save app config:", err);
   }
@@ -1372,11 +1389,13 @@ async function openSettingsPanel() {
     filterNamesInput.addEventListener("input", () => {
       logFilterNames = filterNamesInput.value;
       updateLogFilters();
+      saveAppConfig();
     });
 
     filterRegexInput.addEventListener("input", () => {
       logFilterRegex = filterRegexInput.value;
       updateLogFilters();
+      saveAppConfig();
     });
   } catch (err) {
     container.innerHTML = `<p class="error">Failed to load settings: ${err}</p>`;

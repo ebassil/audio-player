@@ -18,6 +18,10 @@ pub struct AppConfig {
     pub volume: f64,
     pub muted: bool,
     pub plugin_state: Vec<PluginStateEntry>,
+    #[serde(default)]
+    pub log_filter_names: String,
+    #[serde(default)]
+    pub log_filter_regex: String,
 }
 
 impl Default for AppConfig {
@@ -28,6 +32,8 @@ impl Default for AppConfig {
             volume: 1.0,
             muted: false,
             plugin_state: Vec::new(),
+            log_filter_names: String::new(),
+            log_filter_regex: String::new(),
         }
     }
 }
@@ -88,6 +94,8 @@ mod tests {
         assert_eq!(config.mix_pattern, "crossfade");
         assert_eq!(config.mix_duration_secs, 3.0);
         assert!((config.volume - 1.0).abs() < f64::EPSILON);
+        assert_eq!(config.log_filter_names, "");
+        assert_eq!(config.log_filter_regex, "");
     }
 
     #[test]
@@ -98,6 +106,8 @@ mod tests {
             volume: 0.75,
             muted: true,
             plugin_state: Vec::new(),
+            log_filter_names: "player-status, audio-log".to_string(),
+            log_filter_regex: "state=Stopped".to_string(),
         };
         let path = std::env::temp_dir().join("test_app_config.toml");
         config.save(&path).unwrap();
@@ -106,6 +116,8 @@ mod tests {
         assert!((loaded.mix_duration_secs - 5.0).abs() < f64::EPSILON);
         assert!((loaded.volume - 0.75).abs() < f64::EPSILON);
         assert!(loaded.muted);
+        assert_eq!(loaded.log_filter_names, "player-status, audio-log");
+        assert_eq!(loaded.log_filter_regex, "state=Stopped");
         std::fs::remove_file(path).ok();
     }
 
@@ -117,6 +129,8 @@ mod tests {
             volume: 1.0,
             muted: false,
             plugin_state: Vec::new(),
+            log_filter_names: String::new(),
+            log_filter_regex: String::new(),
         };
         let mix_config = app_config.to_mix_config();
         assert_eq!(mix_config.pattern, MixPattern::HardFade);
